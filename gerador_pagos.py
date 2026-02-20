@@ -242,7 +242,7 @@ def processar_faturas_pagas(clientes_selecionados):
     
     for cliente in clientes_selecionados:
         safe_print(f"\n--- Processando PAGO para: {cliente} ---")
-        worksheet_nome = os.getenv(f'{cliente}_WORKSHEET')
+        worksheet_nome = os.getenv(f'{cliente.upper()}_WORKSHEET')
         
         if not worksheet_nome:
             safe_print(f"⚠️ Worksheet não encontrada no .env para {cliente}")
