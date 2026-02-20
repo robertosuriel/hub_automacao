@@ -15,6 +15,7 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.chrome.service import Service
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -61,11 +62,15 @@ def configurar_driver():
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36")
     chrome_options.add_argument("--log-level=3")
     
+    # Parâmetros vitais para rodar em servidor Linux/Docker
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     
-    return webdriver.Chrome(options=chrome_options)
+    chrome_options.binary_location = "/usr/bin/chromium"
+    servico = Service("/usr/bin/chromedriver")
+    
+    return webdriver.Chrome(service=servico, options=chrome_options)
 
 def realizar_login_selenium_original(driver, login_user, login_password):
     try:
