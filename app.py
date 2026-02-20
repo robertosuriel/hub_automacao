@@ -6,60 +6,86 @@ import json
 from dotenv import load_dotenv
 
 # --- TRUQUE DE SEGURANÇA PARA A NUVEM ---
-# Força a recriação do arquivo credentials.json convertendo o dicionário do Streamlit em um JSON real
 if "google_credentials" in st.secrets:
     with open("credentials.json", "w", encoding="utf-8") as f:
         json.dump(dict(st.secrets["google_credentials"]), f)
             
-# Importa as bibliotecas do Streamlit que resolvem o erro de "NoSessionContext" nas Threads
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
-
-# Importa as funções dos seus robôs
 from extrator import processar_cliente
 from gerador_pagos import processar_faturas_pagas
 
 load_dotenv(".env")
 
-st.set_page_config(page_title="Hub de Automação Blue", page_icon="⚡", layout="wide")
+# 1. ATUALIZANDO TÍTULO E ÍCONE PARA SOL ONLINE
+st.set_page_config(page_title="Hub de Automação Sol Online", page_icon="☀️", layout="wide")
 
-# --- COMPONENTE DE LOG EM TEMPO REAL (CORRIGIDO PARA MULTITHREADING) ---
+# --- INJEÇÃO DE IDENTIDADE VISUAL (CSS) ---
+# Copiando o gradiente e botões do painel da Sol Online
+st.markdown("""
+<style>
+    /* Gradiente da Sol Online na barra lateral */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(150deg, #FACC15 0%, #FF3366 100%);
+        color: white;
+    }
+    /* Força os textos da barra lateral a ficarem brancos para dar contraste com o gradiente */
+    [data-testid="stSidebar"] * {
+        color: white !important;
+    }
+    /* Cor do botão primário para o Rosa/Vermelho da marca */
+    div.stButton > button[kind="primary"] {
+        background-color: #FF3366;
+        color: white;
+        border: none;
+        border-radius: 6px;
+        font-weight: bold;
+    }
+    div.stButton > button[kind="primary"]:hover {
+        background-color: #E62E5C;
+        color: white;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# --- COMPONENTE DE LOG EM TEMPO REAL ---
 class StreamlitRedirect:
     def __init__(self, st_empty):
         self.st_empty = st_empty
         self.text = ""
-        # 1. Salva o "RG" (Contexto) da sessão do usuário que apertou o botão
         self.ctx = get_script_run_ctx()
 
     def write(self, string):
         if not string: return
-        
         self.text += string
         linhas = self.text.split('\n')[-15:]
-        
         try:
-            # 2. Injeta o "RG" do usuário na Thread atual antes de tentar atualizar a tela
             if self.ctx:
                 add_script_run_ctx(threading.current_thread(), self.ctx)
-                
             self.st_empty.code('\n'.join(linhas), language='bash')
         except Exception:
-            # Se der algum conflito visual, simplesmente ignora para não travar o robô
             pass
 
     def flush(self):
         pass
 
-
 clientes_disponiveis = ['blue', 'criatech', 'soft', 'softcomp', 'DNA', 'NCA']
 
-# --- BARRA LATERAL (MENU) ---
+# --- BARRA LATERAL (MENU) COM O LOGO ---
+# Insere o logo branco no topo da barra lateral
+try:
+    st.sidebar.image("logo.png", use_container_width=True)
+except Exception:
+    pass # Caso você esqueça de subir a imagem, o código não quebra
+
 st.sidebar.title("🛠️ Ferramentas")
+st.sidebar.markdown("---")
 modulo_selecionado = st.sidebar.radio(
     "Escolha o processo:",
     ["1. Extrair Faturas (Coelba)", "2. Gerar PDFs 'PAGO'"]
 )
 
-st.title(f"⚡ {modulo_selecionado}")
+# Atualizando o título principal
+st.title(f"☀️ {modulo_selecionado}")
 st.markdown("---")
 
 # --- OPÇÕES DE SELEÇÃO DE CLIENTES ---
@@ -99,12 +125,10 @@ if "Extrair Faturas" in modulo_selecionado:
                 for i, cliente in enumerate(clientes_selecionados):
                     texto_status.write(f"**Extraindo:** {cliente.upper()} ({i+1}/{len(clientes_selecionados)})")
                     
-                    # Pega as credenciais DIRETO do cofre (sem os.getenv) para proteger senhas com letras
                     try:
                         login_user = str(st.secrets[f"{cliente.upper()}_LOGIN_USER"])
                         login_password = str(st.secrets[f"{cliente.upper()}_LOGIN_PASSWORD"])
                         
-                        # Usando o mesmo mapa fixo que fizemos pro PAGO (garantia absoluta)
                         MAPA_ABAS = {
                             "blue": "Controle_BlueSolutions_Automação",
                             "criatech": "Controle_Criatech_Automação",
@@ -127,8 +151,6 @@ if "Extrair Faturas" in modulo_selecionado:
                     else:
                         resultados[cliente] = "❌ Falha no Login"
                         
-                        # ---- A MÁGICA VISUAL AQUI ----
-                        # Procura pelas imagens de erro e exibe no Streamlit
                         for img_name in [f"erro_sem_token_{cliente}.png", f"erro_botao_{cliente}.png", f"erro_fatal_{cliente}.png"]:
                             if os.path.exists(img_name):
                                 st.error(f"📸 O robô travou nesta tela (Conta {cliente.upper()}):")
@@ -169,8 +191,6 @@ elif "Gerar PDFs 'PAGO'" in modulo_selecionado:
             try:
                 with st.spinner("Lendo planilhas e aplicando marcas d'água... isso pode levar alguns minutos."):
                     
-                    # --- SOLUÇÃO DEFINITIVA (MAPA DIRETO) ---
-                    # Ignoramos o .env para as abas. Mapeamos os nomes exatos aqui.
                     MAPA_ABAS = {
                         "blue": "Controle_BlueSolutions_Automação",
                         "criatech": "Controle_Criatech_Automação",
@@ -180,12 +200,10 @@ elif "Gerar PDFs 'PAGO'" in modulo_selecionado:
                         "NCA": "Controle_NCA_Automação"
                     }
                     
-                    # 1. Monta o pacote com o nome exato da aba para o gerador
                     clientes_com_aba = {}
                     for cli in clientes_selecionados:
                         clientes_com_aba[cli] = MAPA_ABAS.get(cli)
 
-                    # 2. Envia para processar
                     resultados_pagos = processar_faturas_pagas(clientes_com_aba)
             finally:
                 sys.stdout = old_stdout
