@@ -5,7 +5,8 @@ import threading
 import json
 from dotenv import load_dotenv
 
-
+# --- TRUQUE DE SEGURANÇA PARA A NUVEM ---
+# Força a recriação do arquivo credentials.json convertendo o dicionário do Streamlit em um JSON real
 if "google_credentials" in st.secrets:
     with open("credentials.json", "w", encoding="utf-8") as f:
         json.dump(dict(st.secrets["google_credentials"]), f)
@@ -121,7 +122,18 @@ if "Extrair Faturas" in modulo_selecionado:
                     with st.spinner(f"O robô está trabalhando na conta {cliente}..."):
                         sucesso = processar_cliente(cliente, login_user, login_password, worksheet)
                     
-                    resultados[cliente] = "✅ Sucesso" if sucesso else "❌ Falha"
+                    if sucesso:
+                        resultados[cliente] = "✅ Sucesso"
+                    else:
+                        resultados[cliente] = "❌ Falha no Login"
+                        
+                        # ---- A MÁGICA VISUAL AQUI ----
+                        # Procura pelas imagens de erro e exibe no Streamlit
+                        for img_name in [f"erro_sem_token_{cliente}.png", f"erro_botao_{cliente}.png", f"erro_fatal_{cliente}.png"]:
+                            if os.path.exists(img_name):
+                                st.error(f"📸 O robô travou nesta tela (Conta {cliente.upper()}):")
+                                st.image(img_name)
+
                     barra_progresso.progress((i + 1) / len(clientes_selecionados))
             finally:
                 sys.stdout = old_stdout
@@ -136,9 +148,6 @@ if "Extrair Faturas" in modulo_selecionado:
                 else:
                     st.error(f"**{cli.upper()}**: {status}")
 
-# ==========================================
-# MÓDULO 2: GERAR PDFS 'PAGO'
-# ==========================================
 # ==========================================
 # MÓDULO 2: GERAR PDFS 'PAGO'
 # ==========================================
