@@ -148,16 +148,21 @@ elif "Gerar PDFs 'PAGO'" in modulo_selecionado:
             try:
                 with st.spinner("Lendo planilhas e aplicando marcas d'água... isso pode levar alguns minutos."):
                     
-                    # 1. Monta o pacote de dados mastigado para o gerador_pagos.py
+                    # --- SOLUÇÃO DEFINITIVA (MAPA DIRETO) ---
+                    # Ignoramos o .env para as abas. Mapeamos os nomes exatos aqui.
+                    MAPA_ABAS = {
+                        "blue": "Controle_BlueSolutions_Automação",
+                        "criatech": "Controle_Criatech_Automação",
+                        "soft": "Controle_SoftDados_Automação",
+                        "softcomp": "Controle_SoftComp_Automação",
+                        "DNA": "Controle_DNA_Automação",
+                        "NCA": "Controle_NCA_Automação"
+                    }
+                    
+                    # 1. Monta o pacote com o nome exato da aba para o gerador
                     clientes_com_aba = {}
                     for cli in clientes_selecionados:
-                        # Tenta achar no ambiente
-                        aba = os.getenv(f"{cli.upper()}_WORKSHEET")
-                        # Se não achar, busca direto no cofre do Streamlit
-                        if not aba and f"{cli.upper()}_WORKSHEET" in st.secrets:
-                            aba = st.secrets[f"{cli.upper()}_WORKSHEET"]
-                            
-                        clientes_com_aba[cli] = aba
+                        clientes_com_aba[cli] = MAPA_ABAS.get(cli)
 
                     # 2. Envia para processar
                     resultados_pagos = processar_faturas_pagas(clientes_com_aba)
@@ -172,4 +177,4 @@ elif "Gerar PDFs 'PAGO'" in modulo_selecionado:
                 if "✅" in status:
                     st.success(f"**{cli.upper()}**: {status}")
                 else:
-                    st.warning(f"**{cli.upper()}**: {status}")
+                    st.error(f"**{cli.upper()}**: {status}")
