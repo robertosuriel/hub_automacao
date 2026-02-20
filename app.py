@@ -5,10 +5,10 @@ import threading
 import json
 from dotenv import load_dotenv
 
-if not os.path.exists("credentials.json"):
-    if "google_credentials" in st.secrets:
-        with open("credentials.json", "w") as f:
-            f.write(st.secrets["google_credentials"])
+
+if "google_credentials" in st.secrets:
+    with open("credentials.json", "w", encoding="utf-8") as f:
+        json.dump(dict(st.secrets["google_credentials"]), f)
             
 # Importa as bibliotecas do Streamlit que resolvem o erro de "NoSessionContext" nas Threads
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
