@@ -236,25 +236,21 @@ def processar_aba_otimizada(nome_aba, cache_drive):
 
 # --- FUNÇÃO PRINCIPAL CHAMADA PELO STREAMLIT ---
 # --- FUNÇÃO PRINCIPAL CHAMADA PELO STREAMLIT ---
-def processar_faturas_pagas(clientes_selecionados):
+def processar_faturas_pagas(clientes_dict):
+    """
+    Agora recebe um dicionário mastigado: { 'blue': 'Controle_Blue...', 'DNA': 'Controle_DNA...' }
+    """
     start_time = time.time()
     cache_drive = mapear_arquivos_drive(PASTA_DRIVE_PAGO)
     
     resultados_finais = {}
     
-    for cliente in clientes_selecionados:
+    for cliente, worksheet_nome in clientes_dict.items():
         nome_maiusculo = cliente.upper()
         safe_print(f"\n--- Processando PAGO para: {nome_maiusculo} ---")
         
-        # Busca a aba DIRETAMENTE no cofre do Streamlit (100% seguro)
-        chave_worksheet = f"{nome_maiusculo}_WORKSHEET"
-        try:
-            worksheet_nome = st.secrets[chave_worksheet]
-        except KeyError:
-            worksheet_nome = None
-        
         if not worksheet_nome:
-            safe_print(f"⚠️ Worksheet não encontrada no cofre para {nome_maiusculo}")
+            safe_print(f"⚠️ Worksheet não encontrada para {nome_maiusculo}")
             resultados_finais[nome_maiusculo] = "Falha (Aba não configurada)"
             continue
             
