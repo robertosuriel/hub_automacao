@@ -98,12 +98,24 @@ if "Extrair Faturas" in modulo_selecionado:
                 for i, cliente in enumerate(clientes_selecionados):
                     texto_status.write(f"**Extraindo:** {cliente.upper()} ({i+1}/{len(clientes_selecionados)})")
                     
-                    login_user = os.getenv(f'{cliente.upper()}_LOGIN_USER')
-                    login_password = os.getenv(f'{cliente.upper()}_LOGIN_PASSWORD')
-                    worksheet = os.getenv(f'{cliente.upper()}_WORKSHEET')
-                    
-                    if not all([login_user, login_password, worksheet]):
-                        resultados[cliente] = "❌ Falha (Dados .env)"
+                    # Pega as credenciais DIRETO do cofre (sem os.getenv) para proteger senhas com letras
+                    try:
+                        login_user = str(st.secrets[f"{cliente.upper()}_LOGIN_USER"])
+                        login_password = str(st.secrets[f"{cliente.upper()}_LOGIN_PASSWORD"])
+                        
+                        # Usando o mesmo mapa fixo que fizemos pro PAGO (garantia absoluta)
+                        MAPA_ABAS = {
+                            "blue": "Controle_BlueSolutions_Automação",
+                            "criatech": "Controle_Criatech_Automação",
+                            "soft": "Controle_SoftDados_Automação",
+                            "softcomp": "Controle_SoftComp_Automação",
+                            "DNA": "Controle_DNA_Automação",
+                            "NCA": "Controle_NCA_Automação"
+                        }
+                        worksheet = MAPA_ABAS.get(cliente)
+                        
+                    except KeyError:
+                        resultados[cliente] = "❌ Falha (Dados faltando no Cofre/Secrets)"
                         continue
                     
                     with st.spinner(f"O robô está trabalhando na conta {cliente}..."):
