@@ -287,6 +287,7 @@ def processar_cliente(cliente, login_user, login_password, worksheet):
         
         try:
             driver.get("https://agenciavirtual.neoenergia.com/#/login")
+            time.sleep(4) # Espera a página carregar
             WebDriverWait(driver, 30).until(lambda d: d.execute_script("return document.readyState") == "complete")
             bearer_token = realizar_login_selenium_original(driver, login_user, login_password)
             
