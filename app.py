@@ -127,6 +127,9 @@ if "Extrair Faturas" in modulo_selecionado:
 # ==========================================
 # MÓDULO 2: GERAR PDFS 'PAGO'
 # ==========================================
+# ==========================================
+# MÓDULO 2: GERAR PDFS 'PAGO'
+# ==========================================
 elif "Gerar PDFs 'PAGO'" in modulo_selecionado:
     st.markdown("Esse robô lerá a Coluna J da planilha, aplicará a marca d'água de PAGO e salvará o link na Coluna K.")
     
@@ -144,7 +147,20 @@ elif "Gerar PDFs 'PAGO'" in modulo_selecionado:
             
             try:
                 with st.spinner("Lendo planilhas e aplicando marcas d'água... isso pode levar alguns minutos."):
-                    resultados_pagos = processar_faturas_pagas(clientes_selecionados)
+                    
+                    # 1. Monta o pacote de dados mastigado para o gerador_pagos.py
+                    clientes_com_aba = {}
+                    for cli in clientes_selecionados:
+                        # Tenta achar no ambiente
+                        aba = os.getenv(f"{cli.upper()}_WORKSHEET")
+                        # Se não achar, busca direto no cofre do Streamlit
+                        if not aba and f"{cli.upper()}_WORKSHEET" in st.secrets:
+                            aba = st.secrets[f"{cli.upper()}_WORKSHEET"]
+                            
+                        clientes_com_aba[cli] = aba
+
+                    # 2. Envia para processar
+                    resultados_pagos = processar_faturas_pagas(clientes_com_aba)
             finally:
                 sys.stdout = old_stdout
             
