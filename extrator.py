@@ -432,9 +432,9 @@ if __name__ == "__main__":
         print(f"--- Iniciando cliente: {cliente} ---")
         print(f"{'='*50}")
         
-        login_user = os.getenv(f'{cliente}_LOGIN_USER')
-        login_password = os.getenv(f'{cliente}_LOGIN_PASSWORD')
-        worksheet = os.getenv(f'{cliente}_WORKSHEET')
+        login_user = os.getenv(f'{cliente.upper()}_LOGIN_USER')
+        login_password = os.getenv(f'{cliente.upper()}_LOGIN_PASSWORD')
+        worksheet = os.getenv(f'{cliente.upper()}_WORKSHEET')
 
         if not all([login_user, login_password, worksheet]):
             print(f"Dados incompletos no .env para {cliente}")
