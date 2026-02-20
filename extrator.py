@@ -245,11 +245,27 @@ def baixar_pdf_fatura(numeroFatura, mesReferencia, codigo, tokenNeSe, protocolo_
     return numeroFatura, None, "ERRO"
 
 def preparar_dados_para_exportacao(df):
-    ordem_status = {"Vencidas": 0, "A Vencer": 1, "Pago": 2}
-    df["status_ordenado"] = df["situação"].map(ordem_status).fillna(3)
+    # 1. Definimos o "peso" de cada status (A ordem das suas cores)
+    ordem_status = {
+        "Vencidas": 0,         # 1º (Vermelho)
+        "A Vencer": 1,         # 2º (Amarelo)
+        "Pago": 2,             # 3º (Verde)
+        "Enviando ao Banco": 3,# 4º (Sem formatação)
+        "Enviado ao Banco": 3  # (Variação por precaução)
+    }
+    
+    # Cria uma coluna temporária com o "peso" numérico
+    df["status_ordenado"] = df["situação"].map(ordem_status).fillna(4)
+    
+    # Transforma o vencimento em formato de data real para ordenar cronologicamente
     df["vencimento"] = pd.to_datetime(df["vencimento"], errors="coerce")
-    df = df.sort_values(by=["vencimento", "status_ordenado"])
+    
+    # 2. O SEGREDO: Ordena PRIMEIRO pelo peso do Status, e SEGUNDO pelo Vencimento (A-Z)
+    df = df.sort_values(by=["status_ordenado", "vencimento"])
+    
+    # Limpa a coluna temporária antes de mandar para o Google Sheets
     df = df.drop(columns=["status_ordenado"])
+    
     return df
 
 def processar_cliente(cliente, login_user, login_password, worksheet):
