@@ -98,9 +98,9 @@ if "Extrair Faturas" in modulo_selecionado:
                 for i, cliente in enumerate(clientes_selecionados):
                     texto_status.write(f"**Extraindo:** {cliente.upper()} ({i+1}/{len(clientes_selecionados)})")
                     
-                    login_user = os.getenv(f'{cliente}_LOGIN_USER')
-                    login_password = os.getenv(f'{cliente}_LOGIN_PASSWORD')
-                    worksheet = os.getenv(f'{cliente}_WORKSHEET')
+                    login_user = os.getenv(f'{cliente.upper()}_LOGIN_USER')
+                    login_password = os.getenv(f'{cliente.upper()}_LOGIN_PASSWORD')
+                    worksheet = os.getenv(f'{cliente.upper()}_WORKSHEET')
                     
                     if not all([login_user, login_password, worksheet]):
                         resultados[cliente] = "❌ Falha (Dados .env)"
