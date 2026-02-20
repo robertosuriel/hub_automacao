@@ -2,6 +2,7 @@ import os
 import sys
 import io
 import time
+import streamlit as st
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 
@@ -234,6 +235,7 @@ def processar_aba_otimizada(nome_aba, cache_drive):
     return len(resultados), len(tarefas) - len(resultados)
 
 # --- FUNÇÃO PRINCIPAL CHAMADA PELO STREAMLIT ---
+# --- FUNÇÃO PRINCIPAL CHAMADA PELO STREAMLIT ---
 def processar_faturas_pagas(clientes_selecionados):
     start_time = time.time()
     cache_drive = mapear_arquivos_drive(PASTA_DRIVE_PAGO)
@@ -241,16 +243,23 @@ def processar_faturas_pagas(clientes_selecionados):
     resultados_finais = {}
     
     for cliente in clientes_selecionados:
-        safe_print(f"\n--- Processando PAGO para: {cliente} ---")
-        worksheet_nome = os.getenv(f'{cliente.upper()}_WORKSHEET')
+        nome_maiusculo = cliente.upper()
+        safe_print(f"\n--- Processando PAGO para: {nome_maiusculo} ---")
+        
+        # Busca a aba DIRETAMENTE no cofre do Streamlit (100% seguro)
+        chave_worksheet = f"{nome_maiusculo}_WORKSHEET"
+        try:
+            worksheet_nome = st.secrets[chave_worksheet]
+        except KeyError:
+            worksheet_nome = None
         
         if not worksheet_nome:
-            safe_print(f"⚠️ Worksheet não encontrada no .env para {cliente}")
-            resultados_finais[cliente] = "Falha (Aba não configurada no .env)"
+            safe_print(f"⚠️ Worksheet não encontrada no cofre para {nome_maiusculo}")
+            resultados_finais[nome_maiusculo] = "Falha (Aba não configurada)"
             continue
             
         suc, falha = processar_aba_otimizada(worksheet_nome, cache_drive)
-        resultados_finais[cliente] = f"✅ Sucesso: {suc} | ❌ Falhas: {falha}"
+        resultados_finais[nome_maiusculo] = f"✅ Sucesso: {suc} | ❌ Falhas: {falha}"
         
     safe_print(f"\n🏁 Concluído em {time.time() - start_time:.2f} segundos.")
     return resultados_finais
