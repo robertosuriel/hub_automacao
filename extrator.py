@@ -76,7 +76,7 @@ def realizar_login_selenium_original(driver, login_user, login_password):
     try:
         login_button = driver.find_element(By.XPATH, "/html/body/app-root/app-header/header/nav/div[1]/div/div/button/span[1]")
         login_button.click()
-        print("Login modal aberto. Aguardando campos...")
+        print("  Login modal aberto. Aguardando campos...")
         time.sleep(3)
     except Exception:
         pass
@@ -85,16 +85,20 @@ def realizar_login_selenium_original(driver, login_user, login_password):
         email_field = driver.find_element(By.XPATH, "/html/body/div[2]/div[2]/div/mat-dialog-container/app-dialog-login/mat-dialog-content/section/form/mat-horizontal-stepper/div[2]/div/div/mat-form-field[1]/div/div[1]/div[3]/input")
         email_field.clear()
         email_field.send_keys(login_user)
-        print("Email preenchido. Aguardando senha...")
+        print("  CNPJ preenchido. Aguardando site registrar...")
+        time.sleep(1) # <-- MÁGICA DO ANGULAR: Espera o site "ler" a digitação
 
         password_field = driver.find_element(By.XPATH, "/html/body/div[2]/div[2]/div/mat-dialog-container/app-dialog-login/mat-dialog-content/section/form/mat-horizontal-stepper/div[2]/div/div/mat-form-field[2]/div/div[1]/div[3]/input")
         password_field.clear()
         password_field.send_keys(login_password)
+        print("  Senha preenchida. Aguardando site registrar...")
+        time.sleep(1) # <-- MÁGICA DO ANGULAR: Espera o site "ler" a digitação
 
         submit_button = driver.find_element(By.XPATH, "/html/body/div[2]/div[2]/div/mat-dialog-container/app-dialog-login/mat-dialog-content/section/form/mat-horizontal-stepper/div[2]/div/div/div[3]/app-neo-button/button/div")
         submit_button.click()
         
-        print("Credenciais enviadas. Aguardando token...")
+        print("  Credenciais enviadas. Aguardando token da Neoenergia...")
+        time.sleep(2) # <-- MÁGICA DO ANGULAR: Respiro antes de procurar o token
         
         for i in range(20):
             token = driver.execute_script("return window.localStorage.getItem('tokenNeSe');")
@@ -104,7 +108,7 @@ def realizar_login_selenium_original(driver, login_user, login_password):
             
         return None
     except Exception as e:
-        print(f"Erro no login: {e}")
+        print(f"  ❌ Erro interno na tela de login: {e}")
         return None
 
 # --- SHEETS E DRIVE ---
@@ -288,7 +292,7 @@ def processar_cliente(cliente, login_user, login_password, worksheet):
             
             if bearer_token:
                 tokenNeSe = bearer_token.split(":")[1].split(",")[0].strip(' "{}')
-                print("  ✅ Login realizado.")
+                print("  ✅ Login realizado com sucesso!")
                 driver.quit()
                 break
             else:
@@ -299,7 +303,7 @@ def processar_cliente(cliente, login_user, login_password, worksheet):
         driver.quit()
         tentativa_atual += 1
         if tentativa_atual <= MAX_TENTATIVAS_LOGIN:
-             print("  Aguardando 5 segundos antes de tentar novamente...")
+             print("  Aguardando 5 segundos antes de tentar novamente...\n")
              time.sleep(5)
 
     if not tokenNeSe:
@@ -418,7 +422,7 @@ def processar_cliente(cliente, login_user, login_password, worksheet):
     atualizar_links_sheets(SPREADSHEET_ID, worksheet, df_ordenado)
     restaurar_flags(SPREADSHEET_ID, worksheet, flags_salvas)
 
-    print(f"🎉 Cliente {cliente} finalizado com sucesso.")
+    print(f"🎉 Cliente {cliente.upper()} finalizado com sucesso.")
     return True
 
 
@@ -429,7 +433,7 @@ if __name__ == "__main__":
 
     for cliente in clientes:
         print(f"\n{'='*50}")
-        print(f"--- Iniciando cliente: {cliente} ---")
+        print(f"--- Iniciando cliente: {cliente.upper()} ---")
         print(f"{'='*50}")
         
         login_user = os.getenv(f'{cliente.upper()}_LOGIN_USER')
@@ -437,7 +441,7 @@ if __name__ == "__main__":
         worksheet = os.getenv(f'{cliente.upper()}_WORKSHEET')
 
         if not all([login_user, login_password, worksheet]):
-            print(f"Dados incompletos no .env para {cliente}")
+            print(f"Dados incompletos no .env para {cliente.upper()}")
             resultados[cliente] = "Falha (Dados .env incompletos)"
             continue
 
@@ -454,5 +458,5 @@ if __name__ == "__main__":
     print("="*50)
     for cliente, status in resultados.items():
         simbolo = "✅" if status == "Sucesso" else "❌"
-        print(f"{simbolo} {cliente.ljust(15)} : {status}")
+        print(f"{simbolo} {cliente.ljust(15).upper()} : {status}")
     print("="*50)
