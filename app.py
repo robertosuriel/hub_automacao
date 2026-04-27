@@ -1,378 +1,265 @@
+import streamlit as st
 import os
 import sys
-import time
+import threading
 import json
-import base64
-import requests
-import pandas as pd
-import gspread
-from threading import Lock
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
-
 from dotenv import load_dotenv
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.chrome.service import Service
 
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaInMemoryUpload
-from oauth2client.service_account import ServiceAccountCredentials
-
-import warnings
-warnings.simplefilter(action='ignore', category=FutureWarning)
-warnings.filterwarnings("ignore", category=UserWarning)
-
-# --- CONFIGURAÇÃO INICIAL ---
-
-if getattr(sys, 'frozen', False):
-    base_path = sys._MEIPASS
-else:
-    base_path = os.path.dirname(os.path.abspath(__file__))
-
-env_path = os.path.join(base_path, ".env")
-load_dotenv(env_path)
-
-credentials_path = os.path.join(base_path, "credentials.json")
-df_lock = Lock()
-
-SPREADSHEET_ID = "1Ut5Y0LstIP7nhv7Jzyywc7SS7ObIPlO-3yEg-J8Pp5o"
-PASTA_DRIVE_ID = "1wbPLpNj_h1i3nLCEhVx2vdYyDiIval-9"
-
-# --- FUNÇÕES AUXILIARES ---
-
-def autenticar_google_sheets():
-    scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-    creds = ServiceAccountCredentials.from_json_keyfile_name(credentials_path, scope)
-    return gspread.authorize(creds)
-
-def autenticar_drive():
-    SCOPES = ["https://www.googleapis.com/auth/drive"]
-    creds = service_account.Credentials.from_service_account_file(credentials_path, scopes=SCOPES)
-    return build("drive", "v3", credentials=creds)
-
-def configurar_driver():
-    chrome_options = Options()
-    chrome_options.add_argument("--headless=new")
-    chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36")
-    chrome_options.add_argument("--log-level=3")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    
-    chrome_options.binary_location = "/usr/bin/chromium"
-    servico = Service("/usr/bin/chromedriver")
-    
-    return webdriver.Chrome(service=servico, options=chrome_options)
-
-def realizar_login_selenium_original(driver, login_user, login_password, cliente):
-    try:
-        print("  [LOG] Clicando no botão Entrar superior...")
-        login_button = driver.find_element(By.XPATH, "/html/body/app-root/app-header/header/nav/div[1]/div/div/button/span[1]")
-        login_button.click()
-        time.sleep(3)
-    except Exception:
-        driver.save_screenshot(f"erro_botao_{cliente}.png")
-        pass 
-
-    try:
-        print(f"  [LOG] Preenchendo CNPJ e Senha...")
-        email_field = driver.find_element(By.XPATH, "/html/body/div[2]/div[2]/div/mat-dialog-container/app-dialog-login/mat-dialog-content/section/form/mat-horizontal-stepper/div[2]/div/div/mat-form-field[1]/div/div[1]/div[3]/input")
-        email_field.clear()
-        email_field.send_keys(login_user)
-        time.sleep(1)
-
-        password_field = driver.find_element(By.XPATH, "/html/body/div[2]/div[2]/div/mat-dialog-container/app-dialog-login/mat-dialog-content/section/form/mat-horizontal-stepper/div[2]/div/div/mat-form-field[2]/div/div[1]/div[3]/input")
-        password_field.clear()
-        password_field.send_keys(login_password)
-        time.sleep(1)
-
-        print("  [LOG] Clicando em confirmar...")
-        submit_button = driver.find_element(By.XPATH, "/html/body/div[2]/div[2]/div/mat-dialog-container/app-dialog-login/mat-dialog-content/section/form/mat-horizontal-stepper/div[2]/div/div/div[3]/app-neo-button/button/div")
-        submit_button.click()
-        
-        time.sleep(2) 
-        
-        for i in range(20):
-            token = driver.execute_script("return window.localStorage.getItem('tokenNeSe');")
-            if token:
-                return token
-            time.sleep(1)
+# --- TRUQUE DE SEGURANÇA PARA A NUVEM ---
+if "google_credentials" in st.secrets:
+    with open("credentials.json", "w", encoding="utf-8") as f:
+        json.dump(dict(st.secrets["google_credentials"]), f)
             
-        print("  ❌ Token não veio. Tirando foto da tela...")
-        driver.save_screenshot(f"erro_sem_token_{cliente}.png")
-        return None
-    except Exception as e:
-        print(f"  ❌ Erro fatal no formulário: {e}")
-        driver.save_screenshot(f"erro_fatal_{cliente}.png")
-        return None
+from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+from extrator import processar_cliente
+from gerador_pagos import processar_faturas_pagas
 
-def extrair_faturas_e_flags(planilha_id, nome_aba):
-    try:
-        client = autenticar_google_sheets()
-        aba = client.open_by_key(planilha_id).worksheet(nome_aba)
-        dados = aba.get_values("C2:R")
-        resultado = {}
-        colunas = ['M', 'N', 'O', 'P', 'Q', 'R']
-        indices = [10, 11, 12, 13, 14, 15]
-        for linha in dados:
-            if len(linha) >= 1:
-                fatura = linha[0]
-                flags = {}
-                for coluna, indice in zip(colunas, indices):
-                    if indice < len(linha):
-                        flags[coluna] = (str(linha[indice]).upper() == 'TRUE')
-                    else:
-                        flags[coluna] = False
-                resultado[fatura] = flags
-        return resultado
-    except Exception:
-        return {}
+load_dotenv(".env")
 
-def restaurar_flags(planilha_id, nome_aba, flags_salvas):
-    try:
-        client = autenticar_google_sheets()
-        aba = client.open_by_key(planilha_id).worksheet(nome_aba)
-        faturas_atuais = aba.get_values("C2:C")
-        colunas = ['M', 'N', 'O', 'P', 'Q', 'R']
-        for coluna in colunas:
-            valores = []
-            for linha in faturas_atuais:
-                if linha and linha[0]:
-                    fatura = linha[0]
-                    val = flags_salvas.get(fatura, {}).get(coluna, False)
-                    valores.append([val])
-                else:
-                    valores.append([False])
-            if valores:
-                aba.update(f"{coluna}2:{coluna}{len(valores)+1}", valores, value_input_option='USER_ENTERED')
-    except Exception:
+# 1. CONFIGURAÇÃO DA PÁGINA
+st.set_page_config(page_title="Hub de Automação Sol Online", page_icon="☀️", layout="wide")
+
+# --- INJEÇÃO DE CSS (Visual Personalizado) ---
+st.markdown("""
+<style>
+    /* 1. Gradiente da Barra Lateral (Invertido: Rosa no topo -> Laranja embaixo) */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #FF3366 0%, #FACC15 100%);
+        color: white;
+    }
+    /* Força os textos da barra lateral a ficarem brancos */
+    [data-testid="stSidebar"] * {
+        color: white !important;
+    }
+    /* Ajuste para a logo não ficar colada no teto */
+    [data-testid="stSidebarUserContent"] img {
+        margin-top: 20px;
+        margin-bottom: 15px;
+    }
+    
+    /* 2. Estilo dos Botões Principais (Rosa da Marca) */
+    div.stButton > button[kind="primary"] {
+        background-color: #FF3366;
+        color: white;
+        border: none;
+        border-radius: 8px;
+        font-weight: 700;
+        padding: 0.75rem 1.5rem;
+        transition: all 0.3s ease;
+    }
+    div.stButton > button[kind="primary"]:hover {
+        background-color: #E62E5C;
+        box-shadow: 0 4px 12px rgba(255, 51, 102, 0.3);
+        transform: translateY(-2px);
+    }
+
+    /* 3. Novo Header (Título) Profissional */
+    .main-header {
+        background: linear-gradient(to right, #ffffff, #f8f9fa);
+        padding: 25px;
+        border-radius: 15px;
+        border-left: 8px solid #FF3366; /* Linha de destaque rosa */
+        box-shadow: 0 6px 15px rgba(0,0,0,0.05);
+        margin-bottom: 30px;
+        display: flex;
+        align-items: center;
+    }
+    .main-header h1 {
+        color: #31333F;
+        margin: 0;
+        font-size: 2.2rem;
+        font-weight: 800;
+        letter-spacing: -1px;
+    }
+    /* Ícone do sol no header */
+    .header-icon {
+        font-size: 2.5rem;
+        margin-right: 15px;
+        text-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+
+    /* Ajustes gerais de espaçamento */
+    .block-container {
+        padding-top: 2rem;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# --- COMPONENTE DE LOG EM TEMPO REAL ---
+class StreamlitRedirect:
+    def __init__(self, st_empty):
+        self.st_empty = st_empty
+        self.text = ""
+        self.ctx = get_script_run_ctx()
+
+    def write(self, string):
+        if not string: return
+        self.text += string
+        linhas = self.text.split('\n')[-15:]
+        try:
+            if self.ctx:
+                add_script_run_ctx(threading.current_thread(), self.ctx)
+            self.st_empty.code('\n'.join(linhas), language='bash')
+        except Exception:
+            pass
+
+    def flush(self):
         pass
 
-def escrever_no_google_sheets(df, planilha_id, nome_aba, intervalo="A2:G"):
-    client_sheets = autenticar_google_sheets()
-    planilha = client_sheets.open_by_key(planilha_id)
-    aba = planilha.worksheet(nome_aba)
-    aba.batch_clear([intervalo, "K2:K"])
-    # Garante que as colunas estejam na ordem exata da planilha antes de transformar em lista
-    ordem_planilha = ["codigo_cliente", "mesReferencia", "numeroFatura", "emissão", "vencimento", "valor", "situação"]
-    dados = df[ordem_planilha].astype(str).values.tolist()
-    aba.update(intervalo, dados, value_input_option="USER_ENTERED")
+clientes_disponiveis = ['blue', 'criatech', 'soft', 'softcomp', 'DNA', 'NCA']
 
-def atualizar_links_sheets(planilha_id, nome_aba, df_filtrado):
-    try:
-        client_sheets = autenticar_google_sheets()
-        planilha = client_sheets.open_by_key(planilha_id)
-        aba = planilha.worksheet(nome_aba)
-        col_numero_fatura = aba.col_values(3)[1:]
-        df_filtrado["numeroFatura"] = df_filtrado["numeroFatura"].astype(str).str.strip()
-        dict_links = dict(zip(df_filtrado["numeroFatura"], df_filtrado["link_drive"]))
-        col_j = [str(dict_links.get(f.strip(), "")) for f in col_numero_fatura]
-        if col_j:
-            aba.update(f"J2:J{len(col_j)+1}", [[l] for l in col_j], value_input_option='USER_ENTERED')
-    except Exception as e:
-        print(f"Erro ao atualizar links: {e}")
+# --- BARRA LATERAL (MENU) ---
+try:
+    # Use container width para ajustar o logo
+    st.sidebar.image("logo.png", use_container_width=True)
+except Exception:
+    st.sidebar.warning("Logo não encontrado (logo.png)")
 
-def listar_arquivos_existentes(pasta_id):
-    client_drive = autenticar_drive()
-    arquivos_cache = {}
-    page_token = None
-    try:
-        while True:
-            results = client_drive.files().list(
-                q=f"'{pasta_id}' in parents and trashed = false",
-                pageSize=1000,
-                fields="nextPageToken, files(id, name)",
-                pageToken=page_token
-            ).execute()
-            for f in results.get('files', []):
-                arquivos_cache[f['name']] = f['id']
-            page_token = results.get('nextPageToken')
-            if not page_token:
-                break
-        return arquivos_cache
-    except Exception:
-        return {}
+st.sidebar.title("🛠️ Ferramentas")
+st.sidebar.markdown("---")
+modulo_selecionado = st.sidebar.radio(
+    "Escolha o processo:",
+    ["1. Extrair Faturas (Coelba)", "2. Gerar PDFs 'PAGO'"]
+)
 
-def upload_para_drive_conteudo_pdf(conteudo_pdf, nome_arquivo_drive, pasta_id):
-    client_drive = autenticar_drive()
-    file_metadata = {"name": nome_arquivo_drive, "parents": [pasta_id]}
-    media = MediaInMemoryUpload(conteudo_pdf, mimetype="application/pdf")
-    arquivo = client_drive.files().create(body=file_metadata, media_body=media, fields="id").execute()
-    return arquivo.get("id")
+# --- ÁREA PRINCIPAL COM O NOVO HEADER ---
+# Usamos HTML personalizado para criar o header bonito
+st.markdown(f"""
+<div class="main-header">
+    <span class="header-icon">☀️</span>
+    <h1>{modulo_selecionado}</h1>
+</div>
+""", unsafe_allow_html=True)
 
-def buscar_links_drive(df, pasta_id=None):
-    if "file_id" not in df.columns:
-        df["link_drive"] = pd.NA
-        return df
-    def criar_link(fid):
-        if pd.notna(fid) and str(fid).strip():
-            return f"https://drive.google.com/file/d/{str(fid).strip()}/view?usp=sharing"
-        return pd.NA
-    df["link_drive"] = df["file_id"].apply(criar_link)
-    return df
 
-def baixar_pdf_fatura(numeroFatura, mesReferencia, codigo, tokenNeSe, protocolo_legado, login_user, cache_drive):
-    nome_arquivo = f"{mesReferencia}_{codigo}_{numeroFatura}.pdf"
-    if nome_arquivo in cache_drive:
-        return numeroFatura, cache_drive[nome_arquivo], "EXISTE"
-    url = f"https://apineprd.neoenergia.com/multilogin/2.0.0/servicos/faturas/{numeroFatura}/pdf"
-    headers = {"Authorization": f"Bearer {tokenNeSe}", "Accept": "application/json", "User-Agent": "Mozilla/5.0"}
-    params = {
-        "codigo": codigo, "protocolo": protocolo_legado, "tipificacao": "1031607",
-        "usuario": "WSO2_CONEXAO", "canalSolicitante": "AGC", "motivo": "10",
-        "distribuidora": "COELBA", "regiao": "NE", "tipoPerfil": "1",
-        "documento": login_user, "documentoSolicitante": login_user, "byPassActiv": ""
-    }
-    try:
-        response = requests.get(url, headers=headers, params=params, timeout=60)
-        if response.status_code == 200:
-            data = response.json()
-            if "fileData" in data:
-                pdf_bytes = base64.b64decode(data["fileData"])
-                file_id = upload_para_drive_conteudo_pdf(pdf_bytes, nome_arquivo, PASTA_DRIVE_ID)
-                cache_drive[nome_arquivo] = file_id 
-                return numeroFatura, file_id, "BAIXADO"
-    except: pass
-    return numeroFatura, None, "ERRO"
+# --- OPÇÕES DE SELEÇÃO DE CLIENTES ---
+col1, col2 = st.columns([1, 2])
+with col1:
+    modo = st.radio("Modo de Execução:", ["Rodar Todos", "Selecionar Específicos"])
 
-def preparar_dados_para_exportacao(df):
-    ordem_status = {
-        "Vencidas": 0,
-        "A Vencer": 1,
-        "Pago": 2,
-        "Enviando ao Banco": 3,
-        "Enviado ao Banco": 3
-    }
-    df["status_ordenado"] = df["situação"].map(ordem_status).fillna(4)
-    df["venc_dt"] = pd.to_datetime(df["vencimento"], errors="coerce")
-    df = df.sort_values(by=["status_ordenado", "venc_dt"])
-    df = df.drop(columns=["status_ordenado", "venc_dt"])
-    return df
+with col2:
+    if modo == "Rodar Todos":
+        clientes_selecionados = clientes_disponiveis
+        st.info("Todos os clientes serão processados na sequência.")
+    else:
+        clientes_selecionados = st.multiselect("Selecione os clientes:", clientes_disponiveis, default=[clientes_disponiveis[0]])
 
-def processar_cliente(cliente, login_user, login_password, worksheet):
-    MAX_TENTATIVAS_LOGIN = 3
-    tentativa_atual = 1
-    tokenNeSe = None
 
-    for img in [f"erro_sem_token_{cliente}.png", f"erro_botao_{cliente}.png", f"erro_fatal_{cliente}.png"]:
-        if os.path.exists(img): os.remove(img)
-
-    while tentativa_atual <= MAX_TENTATIVAS_LOGIN:
-        print(f"  [{cliente.upper()}] Tentativa {tentativa_atual}/{MAX_TENTATIVAS_LOGIN}...")
-        driver = configurar_driver()
-        try:
-            driver.get("https://agenciavirtual.neoenergia.com/#/login")
-            time.sleep(4) 
-            WebDriverWait(driver, 30).until(lambda d: d.execute_script("return document.readyState") == "complete")
+# ==========================================
+# MÓDULO 1: EXTRAIR FATURAS COELBA
+# ==========================================
+if "Extrair Faturas" in modulo_selecionado:
+    st.markdown("Esse robô fará login na Coelba, baixará as faturas e atualizará a Planilha (Coluna J).")
+    st.divider()
+    
+    if st.button("▶️ Iniciar Extração Coelba", type="primary", use_container_width=True):
+        if not clientes_selecionados:
+            st.warning("⚠️ Selecione pelo menos um cliente para continuar.")
+        else:
+            st.info(f"Iniciando extração para: {', '.join(clientes_selecionados)}")
             
-            bearer_token = realizar_login_selenium_original(driver, login_user, login_password, cliente)
+            barra_progresso = st.progress(0)
+            texto_status = st.empty()
+            caixa_log = st.empty()
             
-            if bearer_token:
-                tokenNeSe = bearer_token.split(":")[1].split(",")[0].strip(' "{}')
-                print("  ✅ Login realizado!")
-                driver.quit()
-                break
-            else:
-                print("  ⚠️ Token não obtido.")
-        except Exception as e:
-             print(f"  ⚠️ Erro na tentativa: {e}")
-             
-        driver.quit()
-        tentativa_atual += 1
-        if tentativa_atual <= MAX_TENTATIVAS_LOGIN:
-             time.sleep(5)
+            resultados = {}
+            old_stdout = sys.stdout
+            sys.stdout = StreamlitRedirect(caixa_log)
+            
+            try:
+                for i, cliente in enumerate(clientes_selecionados):
+                    texto_status.write(f"**Extraindo:** {cliente.upper()} ({i+1}/{len(clientes_selecionados)})")
+                    
+                    try:
+                        login_user = str(st.secrets[f"{cliente.upper()}_LOGIN_USER"])
+                        login_password = str(st.secrets[f"{cliente.upper()}_LOGIN_PASSWORD"])
+                        
+                        MAPA_ABAS = {
+                            "blue": "Controle_BlueSolutions_Automação",
+                            "criatech": "Controle_Criatech_Automação",
+                            "soft": "Controle_SoftDados_Automação",
+                            "softcomp": "Controle_SoftComp_Automação",
+                            "DNA": "Controle_DNA_Automação",
+                            "NCA": "Controle_NCA_Automação"
+                        }
+                        worksheet = MAPA_ABAS.get(cliente)
+                        
+                    except KeyError:
+                        resultados[cliente] = "❌ Falha (Dados faltando no Cofre/Secrets)"
+                        continue
+                    
+                    with st.spinner(f"O robô está trabalhando na conta {cliente}..."):
+                        sucesso = processar_cliente(cliente, login_user, login_password, worksheet)
+                    
+                    if sucesso:
+                        resultados[cliente] = "✅ Sucesso"
+                    else:
+                        resultados[cliente] = "❌ Falha no Login"
+                        
+                        for img_name in [f"erro_sem_token_{cliente}.png", f"erro_botao_{cliente}.png", f"erro_fatal_{cliente}.png"]:
+                            if os.path.exists(img_name):
+                                st.error(f"📸 O robô travou nesta tela (Conta {cliente.upper()}):")
+                                st.image(img_name)
 
-    if not tokenNeSe:
-        print(f"❌ Falha no login de {cliente}.")
-        return False
+                    barra_progresso.progress((i + 1) / len(clientes_selecionados))
+            finally:
+                sys.stdout = old_stdout
+                
+            texto_status.success("🎉 Extração da Coelba concluída!")
+            
+            st.divider()
+            st.subheader("📊 Relatório de Execução - Extração")
+            for cli, status in resultados.items():
+                if "✅" in status:
+                    st.success(f"**{cli.upper()}**: {status}")
+                else:
+                    st.error(f"**{cli.upper()}**: {status}")
 
-    print("  Obtendo dados de UCs e Faturas...")
-    headers_api = {"User-Agent": "Mozilla/5.0", "Authorization": "Bearer " + tokenNeSe}
+# ==========================================
+# MÓDULO 2: GERAR PDFS 'PAGO'
+# ==========================================
+elif "Gerar PDFs 'PAGO'" in modulo_selecionado:
+    st.markdown("Esse robô lerá a Coluna J da planilha, aplicará a marca d'água de PAGO e salvará o link na Coluna K.")
+    st.divider()
     
-    try:
-        r_ucs = requests.get(f"https://apineprd.neoenergia.com/imoveis/1.1.0/clientes/{login_user}/ucs", 
-                             params={"documento": login_user, "canalSolicitante": "AGC", "distribuidora": "COELBA", "usuario": "WSO2_CONEXAO", "indMaisUcs": "X", "tipoPerfil": "1"}, 
-                             headers=headers_api, timeout=30)
-        codigos_uc = [uc['uc'] for uc in r_ucs.json().get("ucs", [])]
-    except:
-        return False
+    if st.button("▶️ Iniciar Geração de Pagos", type="primary", use_container_width=True):
+        if not clientes_selecionados:
+            st.warning("⚠️ Selecione pelo menos um cliente para continuar.")
+        else:
+            st.info(f"Iniciando processamento PAGO para: {', '.join(clientes_selecionados)}")
+            
+            texto_status = st.empty()
+            caixa_log = st.empty()
+            
+            old_stdout = sys.stdout
+            sys.stdout = StreamlitRedirect(caixa_log)
+            
+            try:
+                with st.spinner("Lendo planilhas e aplicando marcas d'água... isso pode levar alguns minutos."):
+                    
+                    MAPA_ABAS = {
+                        "blue": "Controle_BlueSolutions_Automação",
+                        "criatech": "Controle_Criatech_Automação",
+                        "soft": "Controle_SoftDados_Automação",
+                        "softcomp": "Controle_SoftComp_Automação",
+                        "DNA": "Controle_DNA_Automação",
+                        "NCA": "Controle_NCA_Automação"
+                    }
+                    
+                    clientes_com_aba = {}
+                    for cli in clientes_selecionados:
+                        clientes_com_aba[cli] = MAPA_ABAS.get(cli)
 
-    if not codigos_uc: return False
-
-    try:
-        r_proto = requests.get("https://apineprd.neoenergia.com/protocolo/1.1.0/obterProtocolo",
-                               params={"distribuidora": "COEL", "canalSolicitante": "AGC", "documento": login_user, "codCliente": codigos_uc[0], "recaptchaAnl": "true", "regiao": "NE"},
-                               headers=headers_api, timeout=30)
-        protocolo = r_proto.json().get('protocoloLegado')
-    except: protocolo = None
-
-    dados_coletados = []
-    for codigo in codigos_uc:
-        try:
-            params = {"codigo": codigo, "documento": login_user, "canalSolicitante": "AGC", "usuario": "WSO2_CONEXAO", "protocolo": protocolo, "byPassActiv": "X", "documentoSolicitante": login_user, "documentoCliente": login_user, "distribuidora": "COELBA", "tipoPerfil": "1"}
-            r_fat = requests.get("https://apineprd.neoenergia.com/multilogin/2.0.0/servicos/faturas/ucs/faturas", headers=headers_api, params=params, timeout=30)
-            lista = r_fat.json().get("faturas", []) if r_fat.status_code == 200 else []
-            if lista:
-                for f in lista:
-                    # Mapeamento corrigido para a ordem: UC, Mês, Num, Emissão, Vencimento, Valor, Situação
-                    dados_coletados.append({
-                        "codigo_cliente": codigo, 
-                        "mesReferencia": f.get("mesReferencia", "N/A"), 
-                        "numeroFatura": f.get("numeroFatura", "N/A"),
-                        "emissão": f.get("dataEmissao", "N/A"), 
-                        "vencimento": f.get("dataVencimento", "N/A"),
-                        "valor": f.get("valorEmissao", "N/A").replace(".", ","), 
-                        "situação": f.get("statusFatura", "N/A")
-                    })
-            else:
-                dados_coletados.append({"codigo_cliente": codigo, "mesReferencia": "N/A", "numeroFatura": "N/A", "emissão": "N/A", "vencimento": "N/A", "valor": "N/A", "situação": "N/A"})
-        except: pass
-
-    if not dados_coletados: return False
-
-    df_geral = pd.DataFrame(dados_coletados)
-    
-    # Filtro de datas
-    df_geral['venc_temp'] = pd.to_datetime(df_geral['vencimento'], errors='coerce')
-    df_geral = df_geral.dropna(subset=['venc_temp'])
-    df_geral = df_geral[df_geral['venc_temp'] >= pd.to_datetime("2024-12-01")]
-    df_geral = df_geral.drop(columns=['venc_temp'])
-
-    print("  Atualizando Sheets...")
-    flags_salvas = extrair_faturas_e_flags(SPREADSHEET_ID, worksheet)
-    df_ordenado = preparar_dados_para_exportacao(df_geral)
-    
-    # ESCREVE NA PLANILHA (A função agora garante a ordem das colunas)
-    escrever_no_google_sheets(df_ordenado, SPREADSHEET_ID, worksheet)
-    
-    df_ordenado["file_id"] = pd.NA
-
-    faturas_validas = df_ordenado[df_ordenado["numeroFatura"] != "N/A"].copy()
-    if not faturas_validas.empty:
-        cache_drive = listar_arquivos_existentes(PASTA_DRIVE_ID)
-        def processar_thread(row):
-            return baixar_pdf_fatura(row["numeroFatura"], row["mesReferencia"], row["codigo_cliente"], tokenNeSe, protocolo, login_user, cache_drive)
-        
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            futu_map = {executor.submit(processar_thread, row): row for _, row in faturas_validas.iterrows()}
-            for fut in as_completed(futu_map):
-                try:
-                    num, fid, status = fut.result()
-                    if fid:
-                        with df_lock:
-                            df_ordenado["file_id"] = df_ordenado["file_id"].astype(object)
-                            df_ordenado.loc[df_ordenado["numeroFatura"] == num, "file_id"] = str(fid)
-                except: pass
-
-    print("  Atualizando links...")
-    df_ordenado = buscar_links_drive(df_ordenado, PASTA_DRIVE_ID)
-    atualizar_links_sheets(SPREADSHEET_ID, worksheet, df_ordenado)
-    restaurar_flags(SPREADSHEET_ID, worksheet, flags_salvas)
-
-    return True
+                    resultados_pagos = processar_faturas_pagas(clientes_com_aba)
+            finally:
+                sys.stdout = old_stdout
+            
+            texto_status.success("🎉 Processamento de Pagos concluído!")
+            
+            st.divider()
+            st.subheader("📊 Relatório de Execução - PDFs Pagos")
+            for cli, status in resultados_pagos.items():
+                if "✅" in status:
+                    st.success(f"**{cli.upper()}**: {status}")
+                else:
+                    st.error(f"**{cli.upper()}**: {status}")
