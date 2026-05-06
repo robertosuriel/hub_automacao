@@ -41,6 +41,7 @@ df_lock = Lock()
 
 SPREADSHEET_ID = "1Ut5Y0LstIP7nhv7Jzyywc7SS7ObIPlO-3yEg-J8Pp5o"
 PASTA_DRIVE_ID = "1wbPLpNj_h1i3nLCEhVx2vdYyDiIval-9"
+EXPORT_COLUMNS = ["codigo_cliente", "mesReferencia", "numeroFatura", "emissão", "vencimento", "valor", "situação"]
 
 # --- FUNÇÕES AUXILIARES ---
 
@@ -159,13 +160,27 @@ def restaurar_flags(planilha_id, nome_aba, flags_salvas):
     except Exception:
         pass
 
+def normalizar_valor_emissao(valor):
+    if valor is None:
+        return "N/A"
+    valor_str = str(valor).strip()
+    if not valor_str or valor_str.lower() == "none":
+        return "N/A"
+    return valor_str.replace(".", ",")
+
 def escrever_no_google_sheets(df, planilha_id, nome_aba, intervalo="A2:G"):
     client_sheets = autenticar_google_sheets()
     planilha = client_sheets.open_by_key(planilha_id)
     aba = planilha.worksheet(nome_aba)
     aba.batch_clear([intervalo, "K2:K"])
-    dados = df.astype(str).values.tolist()
-    aba.update(intervalo, dados, value_input_option="USER_ENTERED")
+    df_export = df.copy()
+    for coluna in EXPORT_COLUMNS:
+        if coluna not in df_export.columns:
+            df_export[coluna] = "N/A"
+    df_export = df_export[EXPORT_COLUMNS]
+    dados = df_export.fillna("N/A").astype(str).values.tolist()
+    if dados:
+        aba.update(intervalo, dados, value_input_option="USER_ENTERED")
 
 def atualizar_links_sheets(planilha_id, nome_aba, df_filtrado):
     try:
@@ -337,11 +352,12 @@ def processar_cliente(cliente, login_user, login_password, worksheet):
                     dados_coletados.append({
                         "codigo_cliente": codigo, "mesReferencia": f.get("mesReferencia", "N/A"), "numeroFatura": f.get("numeroFatura", "N/A"),
                         "emissão": f.get("dataEmissao", "N/A"), "vencimento": f.get("dataVencimento", "N/A"),
-                        "valor": f.get("valorEmissao", "N/A").replace(".", ","), "situação": f.get("statusFatura", "N/A")
+                        "valor": normalizar_valor_emissao(f.get("valorEmissao", "N/A")), "situação": f.get("statusFatura", "N/A")
                     })
             else:
                 dados_coletados.append({"codigo_cliente": codigo, "vencimento": "N/A", "numeroFatura": "N/A", "situação": "N/A", "valor": "N/A", "emissão": "N/A", "mesReferencia": "N/A"})
-        except: pass
+        except Exception as e:
+            print(f"  ⚠️ Erro ao processar UC {codigo}: {e}")
 
     if not dados_coletados: return False
 
