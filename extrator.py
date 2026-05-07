@@ -261,16 +261,23 @@ def baixar_pdf_fatura(numeroFatura, mesReferencia, codigo, tokenNeSe, protocolo_
 
 def preparar_dados_para_exportacao(df):
     # 1. Definimos o "peso" de cada status (A ordem das suas cores)
-    ordem_status = {
-        "Vencidas": 0,         # 1º (Vermelho)
-        "A Vencer": 1,         # 2º (Amarelo)
-        "Pago": 2,             # 3º (Verde)
-        "Enviando ao Banco": 3,# 4º (Sem formatação)
-        "Enviado ao Banco": 3  # (Variação por precaução)
+    # Mapeamento normalizado: chave em minúsculo para comparação case-insensitive
+    ordem_status_normalizado = {
+        "vencida": 0,           # 1º (Vermelho) - singular
+        "vencidas": 0,          # 1º (Vermelho) - plural
+        "a vencer": 1,          # 2º (Amarelo)
+        "pago": 2,              # 3º (Verde)
+        "enviando ao banco": 3, # 4º (Sem formatação)
+        "enviado ao banco": 3,  # (Variação por precaução)
     }
-    
+
+    def mapear_status(status):
+        if pd.isna(status):
+            return 4
+        return ordem_status_normalizado.get(str(status).strip().lower(), 4)
+
     # Cria uma coluna temporária com o "peso" numérico
-    df["status_ordenado"] = df["situação"].map(ordem_status).fillna(4)
+    df["status_ordenado"] = df["situação"].apply(mapear_status)
     
     # Transforma o vencimento em formato de data real para ordenar cronologicamente
     df["vencimento"] = pd.to_datetime(df["vencimento"], errors="coerce")
