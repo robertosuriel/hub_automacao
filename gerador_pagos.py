@@ -51,33 +51,32 @@ def autenticar_drive():
     creds = service_account.Credentials.from_service_account_file(credentials_path, scopes=SCOPES)
     return build("drive", "v3", credentials=creds)
 
-# --- OTIMIZAÇÃO 1: MARCA D'ÁGUA EM MEMÓRIA ---
-def criar_marca_dagua_cache():
-    buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=letter)
-    c.setFillColor(red)
-    c.setFont("Helvetica-Bold", 380)
-    width, height = letter
-    c.saveState()
-    c.translate(width/2, height/2)
-    c.rotate(45)
-    c.setFillAlpha(0.3)
-    c.drawCentredString(0, 150, "PAGO")
-    c.drawCentredString(0, -150, "SOL ONLINE")
-    c.restoreState()
-    c.save()
-    buffer.seek(0)
-    return PdfReader(buffer).pages[0]
-
-MARCA_DAGUA_PAGE = criar_marca_dagua_cache()
-
+# --- MARCA D'ÁGUA DINÂMICA (ADAPTA AO TAMANHO DO PDF) ---
 def adicionar_marca_dagua_rapida(pdf_bytes):
     try:
         reader = PdfReader(io.BytesIO(pdf_bytes))
         writer = PdfWriter()
         
         for page in reader.pages:
-            page.merge_page(MARCA_DAGUA_PAGE)
+            largura = float(page.mediabox.width)
+            altura = float(page.mediabox.height)
+
+            watermark_buffer = io.BytesIO()
+            c = canvas.Canvas(watermark_buffer, pagesize=(largura, altura))
+            c.setFillColor(red)
+            c.setFont("Helvetica-Bold", 380)
+            c.saveState()
+            c.translate(largura / 2, altura / 2)
+            c.rotate(45)
+            c.setFillAlpha(0.3)
+            c.drawCentredString(0, 150, "PAGO")
+            c.drawCentredString(0, -150, "SOL ONLINE")
+            c.restoreState()
+            c.save()
+            watermark_buffer.seek(0)
+
+            watermark_page = PdfReader(watermark_buffer).pages[0]
+            page.merge_page(watermark_page)
             writer.add_page(page)
         
         output_buffer = io.BytesIO()
