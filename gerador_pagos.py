@@ -8,9 +8,11 @@ from threading import Lock
 
 # Bibliotecas de PDF e Imagem
 from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import letter
 from reportlab.lib.colors import red
 from PyPDF2 import PdfReader, PdfWriter
+import pypdfium2 as pdfium
+
+from reportlab.lib.pagesizes import letter
 
 # Bibliotecas Google e Rede
 from dotenv import load_dotenv
@@ -56,14 +58,14 @@ def criar_marca_dagua_cache():
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=letter)
     c.setFillColor(red)
-    c.setFont("Helvetica-Bold", 120)
+    c.setFont("Helvetica-Bold", 380)
     width, height = letter
     c.saveState()
     c.translate(width/2, height/2)
     c.rotate(45)
     c.setFillAlpha(0.3)
-    c.drawString(-120, 50, "PAGO")
-    c.drawString(-370, -50, "SOL ONLINE")
+    c.drawCentredString(0, 150, "PAGO")
+    c.drawCentredString(0, -150, "SOL ONLINE")
     c.restoreState()
     c.save()
     buffer.seek(0)
@@ -100,6 +102,69 @@ def gerar_pdf_pago_upload(pdf_bytes):
 
     except Exception as e:
         safe_print(f"❌ Erro ao processar upload manual: {e}")
+        return None
+
+def gerar_pdf_pago_customizado(
+    pdf_bytes,
+    font_size=120,
+    alpha=0.30,
+    angle=45,
+    y_pago=50,
+    y_sol=-50,
+):
+    """
+    Gera um PDF com marca d'agua configuravel para ajuste visual local.
+    """
+    try:
+        if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
+            return None
+
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        writer = PdfWriter()
+
+        for page in reader.pages:
+            largura = float(page.mediabox.width)
+            altura = float(page.mediabox.height)
+
+            watermark_buffer = io.BytesIO()
+            c = canvas.Canvas(watermark_buffer, pagesize=(largura, altura))
+            c.setFillColor(red)
+            c.setFont("Helvetica-Bold", int(font_size))
+            c.saveState()
+            c.translate(largura / 2, altura / 2)
+            c.rotate(float(angle))
+            c.setFillAlpha(float(alpha))
+            c.drawCentredString(0, float(y_pago), "PAGO")
+            c.drawCentredString(0, float(y_sol), "SOL ONLINE")
+            c.restoreState()
+            c.save()
+
+            watermark_buffer.seek(0)
+            watermark_page = PdfReader(watermark_buffer).pages[0]
+            page.merge_page(watermark_page)
+            writer.add_page(page)
+
+        output_buffer = io.BytesIO()
+        writer.write(output_buffer)
+        return output_buffer.getvalue()
+    except Exception as e:
+        safe_print(f"❌ Erro ao gerar PDF customizado: {e}")
+        return None
+
+def renderizar_primeira_pagina_preview(pdf_bytes, scale=2.0):
+    """
+    Renderiza a primeira pagina do PDF como imagem (array) para preview no Streamlit.
+    """
+    try:
+        pdf = pdfium.PdfDocument(io.BytesIO(pdf_bytes))
+        if len(pdf) < 1:
+            return None
+
+        page = pdf[0]
+        bitmap = page.render(scale=float(scale))
+        return bitmap.to_numpy()
+    except Exception as e:
+        safe_print(f"❌ Erro ao renderizar preview: {e}")
         return None
 
 # --- OTIMIZAÇÃO 2: CACHE DE ARQUIVOS ---
