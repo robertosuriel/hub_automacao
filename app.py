@@ -12,7 +12,7 @@ if "google_credentials" in st.secrets:
             
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 from extrator import processar_cliente
-from gerador_pagos import processar_faturas_pagas
+from gerador_pagos import processar_faturas_pagas, gerar_pdf_pago_upload
 
 load_dotenv(".env")
 
@@ -220,6 +220,34 @@ if "Extrair Faturas" in modulo_selecionado:
 # ==========================================
 elif "Gerar PDFs 'PAGO'" in modulo_selecionado:
     st.markdown("Esse robô lerá a Coluna J da planilha, aplicará a marca d'água de PAGO e salvará o link na Coluna K.")
+    st.markdown("### Upload manual de fatura física escaneada")
+    arquivo_pdf_manual = st.file_uploader(
+        "Envie um PDF de fatura física escaneada para gerar a versão com marca d'água PAGO:",
+        type=["pdf"],
+        key="upload_pdf_fisico"
+    )
+
+    if arquivo_pdf_manual is not None:
+        nome_original = arquivo_pdf_manual.name
+        pdf_original_bytes = arquivo_pdf_manual.getvalue()
+
+        if st.button("Gerar PDF com marca d'água (Upload Manual)", use_container_width=True):
+            with st.spinner("Aplicando marca d'água no PDF enviado..."):
+                pdf_com_marca = gerar_pdf_pago_upload(pdf_original_bytes)
+
+            if pdf_com_marca:
+                nome_saida = f"pago_{nome_original}"
+                st.success("✅ PDF processado com sucesso. Faça o download abaixo.")
+                st.download_button(
+                    label="⬇️ Baixar PDF com marca d'água",
+                    data=pdf_com_marca,
+                    file_name=nome_saida,
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+            else:
+                st.error("❌ Não foi possível processar o PDF enviado. Verifique se o arquivo está válido.")
+
     st.divider()
     
     if st.button("▶️ Iniciar Geração de Pagos", type="primary", use_container_width=True):

@@ -87,6 +87,49 @@ def adicionar_marca_dagua_rapida(pdf_bytes):
         safe_print(f"❌ Erro ao adicionar marca d'água: {e}")
         return None
 
+def gerar_pdf_pago_upload(pdf_bytes):
+    """
+    Aplica marca d'agua em um PDF enviado manualmente (ex.: fatura fisica escaneada)
+    e retorna os bytes do novo PDF.
+    """
+    try:
+        if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
+            return None
+
+        reader = PdfReader(io.BytesIO(pdf_bytes))
+        writer = PdfWriter()
+
+        for page in reader.pages:
+            largura = float(page.mediabox.width)
+            altura = float(page.mediabox.height)
+
+            watermark_buffer = io.BytesIO()
+            c = canvas.Canvas(watermark_buffer, pagesize=(largura, altura))
+            c.setFillColor(red)
+            c.setFont("Helvetica-Bold", max(40, int(min(largura, altura) * 0.12)))
+
+            c.saveState()
+            c.translate(largura / 2, altura / 2)
+            c.rotate(45)
+            c.setFillAlpha(0.25)
+            c.drawCentredString(0, 30, "PAGO")
+            c.drawCentredString(0, -50, "SOL ONLINE")
+            c.restoreState()
+            c.save()
+            watermark_buffer.seek(0)
+
+            watermark_page = PdfReader(watermark_buffer).pages[0]
+            page.merge_page(watermark_page)
+            writer.add_page(page)
+
+        output_buffer = io.BytesIO()
+        writer.write(output_buffer)
+        return output_buffer.getvalue()
+
+    except Exception as e:
+        safe_print(f"❌ Erro ao processar upload manual: {e}")
+        return None
+
 # --- OTIMIZAÇÃO 2: CACHE DE ARQUIVOS ---
 def mapear_arquivos_drive(pasta_id):
     safe_print("📂 Mapeando arquivos existentes no Drive...")
