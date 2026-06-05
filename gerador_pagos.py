@@ -72,7 +72,7 @@ def adicionar_marca_dagua_rapida(pdf_bytes):
             angulo = angulo_base - 10
             
             # 3. Definimos a meta: o texto "SOL ONLINE" deve ocupar 90% da diagonal
-            espaco_alvo = diagonal * 0.70
+            espaco_alvo = diagonal * 0.60
             
             # 4. Descobrimos a largura do texto se a fonte fosse tamanho 1
             largura_base = pdfmetrics.stringWidth("SOL ONLINE", "Helvetica-Bold", 1)
