@@ -11,6 +11,7 @@ from threading import Lock
 from reportlab.pdfgen import canvas
 from reportlab.lib.colors import red
 from reportlab.lib.pagesizes import letter
+from reportlab.pdfbase import pdfmetrics
 from PyPDF2 import PdfReader, PdfWriter
 
 # Bibliotecas Google e Rede
@@ -62,18 +63,24 @@ def adicionar_marca_dagua_rapida(pdf_bytes):
             largura = float(page.mediabox.width)
             altura = float(page.mediabox.height)
 
-            # --- CÁLCULOS DINÂMICOS ---
-            # 1. Encontra o tamanho da diagonal da página
+            # --- CÁLCULOS 100% GARANTIDOS ---
+            # 1. Encontra o tamanho da diagonal (o espaço total de ponta a ponta)
             diagonal = math.sqrt(largura**2 + altura**2)
             
-            # 2. Define o tamanho da fonte proporcional à diagonal
-            tamanho_fonte = int(diagonal / 12) 
-            
-            # 3. Define o espaçamento vertical proporcional ao tamanho da fonte
-            espacamento_y = tamanho_fonte * 0.8
-            
-            # 4. Calcula o ângulo exato de canto a canto
+            # 2. Calcula o ângulo exato do canto inferior ao superior
             angulo = math.degrees(math.atan2(altura, largura))
+            
+            # 3. Definimos a meta: o texto "SOL ONLINE" deve ocupar 90% da diagonal
+            espaco_alvo = diagonal * 0.90
+            
+            # 4. Descobrimos a largura do texto se a fonte fosse tamanho 1
+            largura_base = pdfmetrics.stringWidth("SOL ONLINE", "Helvetica-Bold", 1)
+            
+            # 5. Calculamos o tamanho EXATO da fonte para bater a nossa meta de 90%
+            tamanho_fonte = int(espaco_alvo / largura_base)
+            
+            # 6. O espaçamento vertical acompanha o tamanho da fonte
+            espacamento_y = tamanho_fonte * 0.85
 
             watermark_buffer = io.BytesIO()
             c = canvas.Canvas(watermark_buffer, pagesize=(largura, altura))
@@ -81,13 +88,11 @@ def adicionar_marca_dagua_rapida(pdf_bytes):
             c.setFont("Helvetica-Bold", tamanho_fonte)
             
             c.saveState()
-            # Move o eixo para o centro da página
             c.translate(largura / 2, altura / 2)
-            # Rotaciona dinamicamente
             c.rotate(angulo)
             c.setFillAlpha(0.3)
             
-            # Desenha os textos com espaçamento dinâmico
+            # Desenha os textos
             c.drawCentredString(0, espacamento_y, "PAGO")
             c.drawCentredString(0, -espacamento_y, "SOL ONLINE")
             
@@ -120,8 +125,6 @@ def gerar_pdf_pago_upload(pdf_bytes):
     except Exception as e:
         safe_print(f"❌ Erro ao processar upload manual: {e}")
         return None
-
-
 
 # --- OTIMIZAÇÃO 2: CACHE DE ARQUIVOS ---
 def mapear_arquivos_drive(pasta_id):
