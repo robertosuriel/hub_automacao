@@ -34,7 +34,7 @@ load_dotenv(env_path)
 
 credentials_path = os.path.join(base_path, "credentials.json")
 SPREADSHEET_ID = "1Ut5Y0LstIP7nhv7Jzyywc7SS7ObIPlO-3yEg-J8Pp5o"
-PASTA_DRIVE_PAGO = "1kHvWYkoQyL2WnjKDhYGks1jsoTh7zZ1k"
+PASTA_DRIVE_PAGO = "1EXCGG0IDhJexw1W-7vCIpBqqUjr9YzB2"
 
 print_lock = Lock()
 
