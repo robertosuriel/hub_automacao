@@ -68,10 +68,11 @@ def adicionar_marca_dagua_rapida(pdf_bytes):
             diagonal = math.sqrt(largura**2 + altura**2)
             
             # 2. Calcula o ângulo exato do canto inferior ao superior
-            angulo = math.degrees(math.atan2(altura, largura))
+            angulo_base = math.degrees(math.atan2(altura, largura))
+            angulo = angulo_base - 10
             
             # 3. Definimos a meta: o texto "SOL ONLINE" deve ocupar 90% da diagonal
-            espaco_alvo = diagonal * 0.90
+            espaco_alvo = diagonal * 0.80
             
             # 4. Descobrimos a largura do texto se a fonte fosse tamanho 1
             largura_base = pdfmetrics.stringWidth("SOL ONLINE", "Helvetica-Bold", 1)
@@ -80,7 +81,7 @@ def adicionar_marca_dagua_rapida(pdf_bytes):
             tamanho_fonte = int(espaco_alvo / largura_base)
             
             # 6. O espaçamento vertical acompanha o tamanho da fonte
-            espacamento_y = tamanho_fonte * 0.85
+            espacamento_y = tamanho_fonte * 0.65
 
             watermark_buffer = io.BytesIO()
             c = canvas.Canvas(watermark_buffer, pagesize=(largura, altura))
