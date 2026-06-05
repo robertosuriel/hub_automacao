@@ -2,6 +2,7 @@ import os
 import sys
 import io
 import time
+import math
 import streamlit as st
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
@@ -61,16 +62,35 @@ def adicionar_marca_dagua_rapida(pdf_bytes):
             largura = float(page.mediabox.width)
             altura = float(page.mediabox.height)
 
+            # --- CÁLCULOS DINÂMICOS ---
+            # 1. Encontra o tamanho da diagonal da página
+            diagonal = math.sqrt(largura**2 + altura**2)
+            
+            # 2. Define o tamanho da fonte proporcional à diagonal
+            tamanho_fonte = int(diagonal / 12) 
+            
+            # 3. Define o espaçamento vertical proporcional ao tamanho da fonte
+            espacamento_y = tamanho_fonte * 0.8
+            
+            # 4. Calcula o ângulo exato de canto a canto
+            angulo = math.degrees(math.atan2(altura, largura))
+
             watermark_buffer = io.BytesIO()
             c = canvas.Canvas(watermark_buffer, pagesize=(largura, altura))
             c.setFillColor(red)
-            c.setFont("Helvetica-Bold", 380)
+            c.setFont("Helvetica-Bold", tamanho_fonte)
+            
             c.saveState()
+            # Move o eixo para o centro da página
             c.translate(largura / 2, altura / 2)
-            c.rotate(45)
+            # Rotaciona dinamicamente
+            c.rotate(angulo)
             c.setFillAlpha(0.3)
-            c.drawCentredString(0, 150, "PAGO")
-            c.drawCentredString(0, -150, "SOL ONLINE")
+            
+            # Desenha os textos com espaçamento dinâmico
+            c.drawCentredString(0, espacamento_y, "PAGO")
+            c.drawCentredString(0, -espacamento_y, "SOL ONLINE")
+            
             c.restoreState()
             c.save()
             watermark_buffer.seek(0)
@@ -94,7 +114,7 @@ def gerar_pdf_pago_upload(pdf_bytes):
     try:
         if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
             return None
-        # Mantem exatamente o mesmo visual do fluxo ja existente.
+        # Repassa para a função principal já ajustada
         return adicionar_marca_dagua_rapida(pdf_bytes)
 
     except Exception as e:
@@ -250,7 +270,6 @@ def processar_aba_otimizada(nome_aba, cache_drive):
             
     return len(resultados), len(tarefas) - len(resultados)
 
-# --- FUNÇÃO PRINCIPAL CHAMADA PELO STREAMLIT ---
 # --- FUNÇÃO PRINCIPAL CHAMADA PELO STREAMLIT ---
 def processar_faturas_pagas(clientes_dict):
     """
