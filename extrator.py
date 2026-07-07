@@ -58,17 +58,22 @@ def autenticar_drive():
 
 def configurar_driver():
     chrome_options = Options()
-    # O PULO DO GATO: Usar o headless=new na nuvem
-    chrome_options.add_argument("--headless=new")
+    # Headless sem sufixo =new para compatibilidade com versões antigas do Chromium
+    chrome_options.add_argument("--headless")
     chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36")
     chrome_options.add_argument("--log-level=3")
-    
-    # Parâmetros vitais para nuvem (Linux)
+
+    # Parâmetros vitais para nuvem / container Linux
     chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-setuid-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--no-zygote")
+    chrome_options.add_argument("--single-process")
+    chrome_options.add_argument("--disable-extensions")
+    chrome_options.add_argument("--disable-software-rasterizer")
 
     # Detecta o binário do Chromium dinamicamente
     chromium_candidates = [
