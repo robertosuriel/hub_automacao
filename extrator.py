@@ -75,24 +75,9 @@ def configurar_driver():
     chrome_options.add_argument("--disable-extensions")
     chrome_options.add_argument("--disable-software-rasterizer")
 
-    # Detecta o binário do Chromium dinamicamente
-    chromium_candidates = [
-        "/usr/bin/chromium",
-        "/usr/bin/chromium-browser",
-        "/usr/bin/google-chrome",
-        "/usr/bin/google-chrome-stable",
-    ]
-    chromium_path = next((p for p in chromium_candidates if os.path.exists(p)), None)
-    if chromium_path is None:
-        chromium_path = shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
-    if chromium_path:
-        chrome_options.binary_location = chromium_path
-
-    # Detecta o chromedriver dinamicamente
-    chromedriver_path = shutil.which("chromedriver") or "/usr/bin/chromedriver"
-    servico = Service(chromedriver_path)
-    
-    return webdriver.Chrome(service=servico, options=chrome_options)
+    # Selenium Manager (Selenium 4.6+) baixa automaticamente o Chrome for Testing
+    # + ChromeDriver compativel, sem depender de pacotes do sistema operacional
+    return webdriver.Chrome(options=chrome_options)
 
 def realizar_login_selenium_original(driver, login_user, login_password, cliente):
     try:

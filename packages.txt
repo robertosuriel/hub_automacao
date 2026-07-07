@@ -1,2 +1,1 @@
-chromium
-chromium-driver
+# chromium e chromedriver sao gerenciados automaticamente pelo Selenium Manager
