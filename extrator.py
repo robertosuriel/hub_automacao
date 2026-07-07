@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import json
+import shutil
 import base64
 import requests
 import pandas as pd
@@ -68,9 +69,23 @@ def configurar_driver():
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
-    
-    chrome_options.binary_location = "/usr/bin/chromium"
-    servico = Service("/usr/bin/chromedriver")
+
+    # Detecta o binário do Chromium dinamicamente
+    chromium_candidates = [
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/google-chrome",
+        "/usr/bin/google-chrome-stable",
+    ]
+    chromium_path = next((p for p in chromium_candidates if os.path.exists(p)), None)
+    if chromium_path is None:
+        chromium_path = shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
+    if chromium_path:
+        chrome_options.binary_location = chromium_path
+
+    # Detecta o chromedriver dinamicamente
+    chromedriver_path = shutil.which("chromedriver") or "/usr/bin/chromedriver"
+    servico = Service(chromedriver_path)
     
     return webdriver.Chrome(service=servico, options=chrome_options)
 
