@@ -1,0 +1,10 @@
+venv/
+__pycache__/
+*.pyc
+
+.env
+credentials.json
+.streamlit/secrets.toml
+
+erro_*.png
+erro_*.html

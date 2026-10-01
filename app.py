@@ -13,6 +13,7 @@ if "google_credentials" in st.secrets:
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 from extrator import processar_cliente
 from gerador_pagos import processar_faturas_pagas, gerar_pdf_pago_upload
+from protocolos import processar_protocolos
 
 load_dotenv(".env")
 
@@ -119,7 +120,7 @@ st.sidebar.title("🛠️ Ferramentas")
 st.sidebar.markdown("---")
 modulo_selecionado = st.sidebar.radio(
     "Escolha o processo:",
-    ["1. Extrair Faturas (Coelba)", "2. Gerar PDFs 'PAGO'"]
+    ["1. Extrair Faturas (Coelba)", "2. Gerar PDFs 'PAGO'", "3. Acompanhar Protocolos (Coelba)"]
 )
 
 # --- ÁREA PRINCIPAL COM O NOVO HEADER ---
@@ -293,3 +294,67 @@ elif "Gerar PDFs 'PAGO'" in modulo_selecionado:
                     st.success(f"**{cli.upper()}**: {status}")
                 else:
                     st.error(f"**{cli.upper()}**: {status}")
+
+# ==========================================
+# MÓDULO 3: ACOMPANHAR PROTOCOLOS (COELBA)
+# ==========================================
+elif "Acompanhar Protocolos" in modulo_selecionado:
+    st.markdown(
+        "Esse robô faz login na Coelba, varre 'Acompanhe Suas Solicitações' de cada Unidade "
+        "Consumidora e atualiza a planilha de Protocolos. Quando uma solicitação vira "
+        "**Finalizada**, marca o alerta na planilha e tenta enviar um e-mail automático."
+    )
+    st.link_button(
+        "📄 Abrir planilha de Protocolos",
+        "https://docs.google.com/spreadsheets/d/1_tGDCBzQ_7Swwf4XKfWsU1mv0XHNRlB3jEZYpLaN-yk/edit",
+        use_container_width=True,
+    )
+    st.info(
+        "⚠️ Chamados de **falta de energia** não são consultáveis pela Agência Virtual "
+        "(confirmado no manual da Coelba). Continue registrando esses na aba "
+        "'Falta de Energia (Manual)' da planilha."
+    )
+    st.divider()
+
+    if st.button("▶️ Iniciar Consulta de Protocolos", type="primary", use_container_width=True):
+        if not clientes_selecionados:
+            st.warning("⚠️ Selecione pelo menos um cliente para continuar.")
+        else:
+            st.info(f"Iniciando consulta de protocolos para: {', '.join(clientes_selecionados)}")
+
+            texto_status = st.empty()
+            caixa_log = st.empty()
+
+            old_stdout = sys.stdout
+            sys.stdout = StreamlitRedirect(caixa_log)
+
+            clientes_login = {}
+            resultados_protocolos = {}
+            try:
+                for cliente in clientes_selecionados:
+                    try:
+                        login_user = str(st.secrets[f"{cliente.upper()}_LOGIN_USER"])
+                        login_password = str(st.secrets[f"{cliente.upper()}_LOGIN_PASSWORD"])
+                        clientes_login[cliente] = (login_user, login_password)
+                    except KeyError:
+                        resultados_protocolos[cliente.upper()] = "❌ Falha (Dados faltando no Cofre/Secrets)"
+
+                with st.spinner("O robô está consultando as solicitações na Coelba..."):
+                    resultados_protocolos.update(processar_protocolos(clientes_login))
+            finally:
+                sys.stdout = old_stdout
+
+            texto_status.success("🎉 Consulta de Protocolos concluída!")
+
+            st.divider()
+            st.subheader("📊 Relatório de Execução - Protocolos")
+            for cli, status in resultados_protocolos.items():
+                if "✅" in status:
+                    st.success(f"**{cli}**: {status}")
+                else:
+                    st.error(f"**{cli}**: {status}")
+
+                for img_name in [f"erro_protocolo_protocolo_{cli.lower()}.png"]:
+                    if os.path.exists(img_name):
+                        st.error(f"📸 O robô travou nesta tela (Conta {cli}):")
+                        st.image(img_name)
