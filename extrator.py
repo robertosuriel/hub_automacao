@@ -354,29 +354,64 @@ def processar_cliente(cliente, login_user, login_password, worksheet):
     except: protocolo = None
 
     dados_coletados = []
+    ucs_com_falha = []
+    print(f"  {len(codigos_uc)} UC(s) encontradas: {', '.join(map(str, codigos_uc))}")
     for codigo in codigos_uc:
-        try:
-            params = {"codigo": codigo, "documento": login_user, "canalSolicitante": "AGC", "usuario": "WSO2_CONEXAO", "protocolo": protocolo, "byPassActiv": "X", "documentoSolicitante": login_user, "documentoCliente": login_user, "distribuidora": "COELBA", "tipoPerfil": "1"}
-            r_fat = requests.get("https://apineprd.neoenergia.com/multilogin/2.0.0/servicos/faturas/ucs/faturas", headers=headers_api, params=params, timeout=30)
-            lista = r_fat.json().get("faturas", []) if r_fat.status_code == 200 else []
-            if lista:
-                for f in lista:
-                    dados_coletados.append({
-                        "codigo_cliente": codigo, "mesReferencia": f.get("mesReferencia", "N/A"), "numeroFatura": f.get("numeroFatura", "N/A"),
-                        "emissão": f.get("dataEmissao", "N/A"), "vencimento": f.get("dataVencimento", "N/A"),
-                        "valor": normalizar_valor_emissao(f.get("valorEmissao", "N/A")), "situação": f.get("statusFatura", "N/A")
-                    })
-            else:
-                dados_coletados.append({"codigo_cliente": codigo, "vencimento": "N/A", "numeroFatura": "N/A", "situação": "N/A", "valor": "N/A", "emissão": "N/A", "mesReferencia": "N/A"})
-        except Exception as e:
-            print(f"  ⚠️ Erro ao processar UC {codigo}: {e}")
+        params = {"codigo": codigo, "documento": login_user, "canalSolicitante": "AGC", "usuario": "WSO2_CONEXAO", "protocolo": protocolo, "byPassActiv": "X", "documentoSolicitante": login_user, "documentoCliente": login_user, "distribuidora": "COELBA", "tipoPerfil": "1"}
+        lista = None
+        retorno = None
+        for tentativa in range(1, 4):
+            try:
+                r_fat = requests.get("https://apineprd.neoenergia.com/multilogin/2.0.0/servicos/faturas/ucs/faturas", headers=headers_api, params=params, timeout=30)
+                if r_fat.status_code == 200:
+                    corpo = r_fat.json()
+                    lista = corpo.get("faturas", []) or []
+                    retorno = corpo.get("retorno")
+                    break
+                if r_fat.status_code in (401, 403, 429) or r_fat.status_code >= 500:
+                    print(f"  ⚠️ UC {codigo}: HTTP {r_fat.status_code} (tentativa {tentativa}/3)")
+                else:
+                    print(f"  ℹ️ UC {codigo}: HTTP {r_fat.status_code}, tratada como sem faturas")
+                    lista = []
+                    break
+            except Exception as e:
+                print(f"  ⚠️ UC {codigo}: erro na tentativa {tentativa}/3: {e}")
+            time.sleep(2)
+
+        if lista is None:
+            ucs_com_falha.append(codigo)
+            continue
+
+        print(f"  UC {codigo}: {len(lista)} fatura(s) retornada(s) pela API" + (f" | retorno={retorno}" if not lista and retorno else ""))
+        if lista:
+            for f in lista:
+                dados_coletados.append({
+                    "codigo_cliente": codigo, "mesReferencia": f.get("mesReferencia", "N/A"), "numeroFatura": f.get("numeroFatura", "N/A"),
+                    "emissão": f.get("dataEmissao", "N/A"), "vencimento": f.get("dataVencimento", "N/A"),
+                    "valor": normalizar_valor_emissao(f.get("valorEmissao", "N/A")), "situação": f.get("statusFatura", "N/A")
+                })
+        else:
+            dados_coletados.append({"codigo_cliente": codigo, "vencimento": "N/A", "numeroFatura": "N/A", "situação": "N/A", "valor": "N/A", "emissão": "N/A", "mesReferencia": "N/A"})
+
+    if ucs_com_falha:
+        print(f"❌ Não foi possível obter as faturas das UCs {', '.join(map(str, ucs_com_falha))}. Planilha NÃO atualizada para evitar apagar faturas existentes.")
+        return False
 
     if not dados_coletados: return False
 
     df_geral = pd.DataFrame(dados_coletados)
     df_geral['vencimento'] = pd.to_datetime(df_geral['vencimento'], errors='coerce')
-    df_geral = df_geral.dropna(subset=['vencimento'])
-    df_geral = df_geral[df_geral['vencimento'] >= pd.to_datetime("2024-12-01")]
+    corte = pd.to_datetime("2024-12-01")
+    fatura_real = df_geral['numeroFatura'] != "N/A"
+
+    sem_vencimento = df_geral[df_geral['vencimento'].isna() & fatura_real]
+    if not sem_vencimento.empty:
+        print(f"  ⚠️ {len(sem_vencimento)} fatura(s) com vencimento ausente/ilegível (mantidas na planilha): {', '.join(sem_vencimento['numeroFatura'].astype(str))}")
+    antigas = df_geral[df_geral['vencimento'] < corte]
+    if not antigas.empty:
+        print(f"  ℹ️ {len(antigas)} fatura(s) com vencimento anterior a 01/12/2024 ignoradas: {', '.join(antigas['numeroFatura'].astype(str))}")
+
+    df_geral = df_geral[(df_geral['vencimento'] >= corte) | (df_geral['vencimento'].isna() & fatura_real)]
     df_geral['vencimento'] = df_geral['vencimento'].dt.strftime('%Y-%m-%d').fillna('N/A')
     
     print("  Atualizando Sheets...")

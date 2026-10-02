@@ -197,7 +197,7 @@ if "Extrair Faturas" in modulo_selecionado:
                     if sucesso:
                         resultados[cliente] = "✅ Sucesso"
                     else:
-                        resultados[cliente] = "❌ Falha no Login"
+                        resultados[cliente] = "❌ Falha (login ou consulta de faturas — veja o log acima)"
                         
                         for img_name in [f"erro_sem_token_{cliente}.png", f"erro_botao_{cliente}.png", f"erro_fatal_{cliente}.png"]:
                             if os.path.exists(img_name):
