@@ -1,5 +1,4 @@
 import os
-import re
 import sys
 import time
 import base64
@@ -8,9 +7,7 @@ from email.mime.text import MIMEText
 
 import requests
 from dotenv import load_dotenv
-from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -40,27 +37,8 @@ ABA_PROTOCOLOS = "Protocolos"
 # Cliente | CNPJ | UC / Codigo do Cliente | No da Solicitacao | Tipo | Descricao |
 # Data da Solicitacao | Situacao | Prazo | Ultima Atualizacao | Alerta Enviado | Descoberto em | Observacoes
 
-# Prefixos de solicitação consultáveis pela Agência Virtual (ver "Consulta de Reclamações.pdf")
-PREFIXOS_TIPO = [
-    ("70000", "Reclamação de 1ª instância"),
-    ("48", "Verificação de equipamento"),
-    ("50", "Religação"),
-    ("49", "Desligamento"),
-    ("41", "Aferição de medidor"),
-    ("42", "Restituição de valores"),
-    ("45", "Ligação nova e reativação"),
-]
 
-
-def identificar_tipo(numero_solicitacao):
-    numero = str(numero_solicitacao).strip()
-    for prefixo, tipo in PREFIXOS_TIPO:
-        if numero.startswith(prefixo):
-            return tipo
-    return "Outro"
-
-
-# --- API: DESCOBERTA DE UCs (mesma API já usada em extrator.py) ---
+# --- APIs da Agência Virtual (mesmo backend usado pelo extrator.py pra faturas) ---
 
 def obter_ucs_cliente(login_user, token_ne_se):
     headers_api = {"User-Agent": "Mozilla/5.0", "Authorization": "Bearer " + token_ne_se}
@@ -79,161 +57,85 @@ def obter_ucs_cliente(login_user, token_ne_se):
         return []
 
 
-# --- NAVEGAÇÃO SELENIUM (baseado nas telas de "Consulta de Reclamações.pdf") ---
-# ATENÇÃO: seletores baseados nos textos visíveis das telas. Como não foi possível
-# validar contra o site ao vivo (exige login com credencial real), é bem provável
-# que alguns ajustes sejam necessários após o primeiro teste real. Em caso de erro,
-# screenshot + HTML da página são salvos para facilitar o ajuste.
-
-def _salvar_debug(driver, nome):
+def obter_protocolo_uc(login_user, uc_codigo, token_ne_se):
+    """Mesmo endpoint que o extrator.py usa pra gerar o 'protocoloLegado' das faturas,
+    aqui chamado por UC pra usar na consulta de solicitações dessa UC."""
+    headers_api = {"User-Agent": "Mozilla/5.0", "Authorization": "Bearer " + token_ne_se}
     try:
-        driver.save_screenshot(f"erro_protocolo_{nome}.png")
-        with open(f"erro_protocolo_{nome}.html", "w", encoding="utf-8") as f:
-            f.write(driver.page_source)
-    except Exception:
-        pass
-
-
-def _clicar_por_texto(driver, texto, tags=("a", "button", "span", "div"), timeout=15):
-    xpath = " | ".join(f'//{tag}[contains(normalize-space(.), "{texto}")]' for tag in tags)
-    elemento = WebDriverWait(driver, timeout).until(
-        EC.element_to_be_clickable((By.XPATH, xpath))
-    )
-    elemento.click()
-    return elemento
-
-
-def navegar_para_unidade(driver, uc_codigo, cliente):
-    """Vai em 'Para a Unidade Consumidora', pesquisa a UC e entra nela."""
-    try:
-        _clicar_por_texto(driver, "Para a Unidade Consumidora", tags=("a", "span"))
-        time.sleep(1)
-        _clicar_por_texto(driver, "Minhas Unidades Consumidoras", tags=("a", "span"))
-    except Exception:
-        pass  # pode já estar na listagem de unidades
-
-    try:
-        campo_busca = WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.XPATH, "//input[contains(@placeholder, 'Código')]"))
+        r = requests.get(
+            "https://apineprd.neoenergia.com/protocolo/1.1.0/obterProtocolo",
+            params={
+                "distribuidora": "COEL", "canalSolicitante": "AGC", "documento": login_user,
+                "codCliente": uc_codigo, "recaptchaAnl": "true", "regiao": "NE",
+            },
+            headers=headers_api, timeout=30,
         )
-        campo_busca.clear()
-        campo_busca.send_keys(uc_codigo)
-        time.sleep(1)
-        campo_busca.send_keys("\n")
-        time.sleep(2)
-
-        linha = WebDriverWait(driver, 15).until(
-            EC.element_to_be_clickable((By.XPATH, f"//*[contains(text(), '{uc_codigo}')]/ancestor::*[self::div][1]"))
-        )
-        linha.click()
-        time.sleep(2)
-        return True
+        return r.json().get("protocoloLegado")
     except Exception as e:
-        print(f"  ⚠️ [{cliente}] Não consegui abrir a UC {uc_codigo}: {e}")
-        _salvar_debug(driver, f"{cliente}_{uc_codigo}_unidade")
-        return False
+        print(f"  ⚠️ Erro ao obter protocolo da UC {uc_codigo}: {e}")
+        return None
 
 
-def abrir_acompanhe_solicitacoes(driver, cliente, uc_codigo):
+def consultar_solicitacoes_uc(login_user, uc_codigo, protocolo, token_ne_se):
+    """Endpoint real por trás da tela 'Acompanhe Suas Solicitações' (descoberto via
+    DevTools). Evita ter que navegar o site com Selenium pra isso."""
+    headers_api = {"User-Agent": "Mozilla/5.0", "Authorization": "Bearer " + token_ne_se, "Accept": "application/json"}
     try:
-        _clicar_por_texto(driver, "Para Você", tags=("a", "span"))
-        time.sleep(1)
-        _clicar_por_texto(driver, "Acompanhe suas Solicitações", tags=("a", "span"))
-        time.sleep(2)
-        WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'Acompanhe Suas Solicitações')]"))
+        r = requests.get(
+            f"https://apineprd.neoenergia.com/multilogin/2.0.0/servicos/acompanhamento-solicitacoes/{login_user}/pedidos-header",
+            params={
+                "regiao": "NE", "distribuidora": "COELBA", "codigo": uc_codigo, "protocolo": protocolo,
+                "tipificacao": "1011601", "documentoSolicitante": login_user,
+                "canalSolicitante": "AGC", "usuario": "WSO2_CONEXAO", "tipoPerfil": "1",
+            },
+            headers=headers_api, timeout=30,
         )
-        return True
+        if r.status_code != 200:
+            return []
+        dados = r.json().get("solicitacoes", []) or []
+        # "estrutura": "P" são registros de contato/log gerados a cada consulta à
+        # página (tipo "Contato"), não são reclamações/solicitações reais.
+        return [s for s in dados if s.get("estrutura") == "N"]
     except Exception as e:
-        print(f"  ⚠️ [{cliente}] Não consegui abrir 'Acompanhe suas Solicitações' na UC {uc_codigo}: {e}")
-        _salvar_debug(driver, f"{cliente}_{uc_codigo}_solicitacoes")
-        return False
-
-
-PADRAO_LISTAGEM = re.compile(
-    r"N[ºo°] da Solicita[çc][ãa]o\s*(?P<numero>\S+)\s*"
-    r"Descri[çc][ãa]o\s*(?P<descricao>.+?)\s*"
-    r"Data da Solicita[çc][ãa]o\s*em\s*(?P<data>\d{2}/\d{2}/\d{4})\s*"
-    r"Situa[çc][ãa]o\s*(?P<situacao>\S+)",
-    re.IGNORECASE,
-)
-
-
-def parse_pagina_atual(driver):
-    try:
-        texto = driver.find_element(By.TAG_NAME, "body").text
-    except Exception:
+        print(f"  ⚠️ Erro ao consultar solicitações da UC {uc_codigo}: {e}")
         return []
-    return [m.groupdict() for m in PADRAO_LISTAGEM.finditer(texto)]
 
 
-def ir_proxima_pagina(driver):
+def buscar_detalhe_solicitacao(login_user, uc_codigo, numero, protocolo, token_ne_se):
+    """Endpoint por trás do detalhe expandido de uma solicitação (prazo, última
+    atualização real e o histórico completo, incluindo o resultado quando
+    finalizada). Só vale a pena chamar pra solicitações novas ou que mudaram
+    de situação (evita uma chamada extra por solicitação já conhecida)."""
+    headers_api = {"User-Agent": "Mozilla/5.0", "Authorization": "Bearer " + token_ne_se, "Accept": "application/json"}
     try:
-        botao = driver.find_element(By.XPATH, "//*[contains(text(), 'Próximo')]")
-        classes = (botao.get_attribute("class") or "").lower()
-        if "disabled" in classes or not botao.is_enabled():
-            return False
-        botao.click()
-        time.sleep(2)
-        return True
-    except Exception:
-        return False
-
-
-def listar_todas_solicitacoes(driver, cliente, uc_codigo, max_paginas=20):
-    solicitacoes = []
-    vistos = set()
-    for _ in range(max_paginas):
-        pagina = parse_pagina_atual(driver)
-        novas = [s for s in pagina if s["numero"] not in vistos]
-        if not novas and vistos:
-            break
-        for s in novas:
-            vistos.add(s["numero"])
-        solicitacoes.extend(novas)
-        if not ir_proxima_pagina(driver):
-            break
-    return solicitacoes
-
-
-PADRAO_DETALHE_PRAZO = re.compile(r"Prazo\s*(\d{2}/\d{2}/\d{4})")
-PADRAO_DETALHE_ATUALIZACAO = re.compile(r"[UÚ]ltima Atualiza[çc][ãa]o\s*(\d{2}/\d{2}/\d{4})")
-PADRAO_DETALHE_PROTOCOLO = re.compile(r"Protocolo Principal\s*(\S+)")
-
-
-def buscar_detalhe_solicitacao(driver, numero, cliente):
-    """Usa o campo de pesquisa pra achar a solicitação e expande pra ler Prazo/Última Atualização."""
-    detalhe = {"prazo": "", "ultima_atualizacao": "", "protocolo_principal": ""}
-    try:
-        campo = WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.XPATH, "//input[contains(@placeholder, 'número da solicitação')]"))
+        r = requests.get(
+            f"https://apineprd.neoenergia.com/multilogin/2.0.0/servicos/acompanhamento-solicitacoes/{numero}/pedidos-detalhe",
+            params={
+                "documento": login_user, "regiao": "NE", "distribuidora": "COELBA",
+                "tipoEstrutura": "N", "protocolo": protocolo, "tipificacao": "1010602",
+                "documentoSolicitante": login_user, "canalSolicitante": "AGC",
+                "usuario": "WSO2_CONEXAO", "codigo": uc_codigo, "protocoloSolicitacao": numero,
+                "tipoPerfil": "1", "geraSsOs": "S",
+            },
+            headers=headers_api, timeout=30,
         )
-        campo.clear()
-        campo.send_keys(numero)
-        time.sleep(1)
-        campo.send_keys("\n")
-        time.sleep(2)
-
-        seta = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.XPATH, f"//*[contains(text(), '{numero}')]/ancestor::*[self::div][1]//*[self::button or self::svg or self::i][last()]"))
-        )
-        seta.click()
-        time.sleep(1.5)
-
-        texto = driver.find_element(By.TAG_NAME, "body").text
-        m_prazo = PADRAO_DETALHE_PRAZO.search(texto)
-        m_atualizacao = PADRAO_DETALHE_ATUALIZACAO.search(texto)
-        m_protocolo = PADRAO_DETALHE_PROTOCOLO.search(texto)
-        if m_prazo:
-            detalhe["prazo"] = m_prazo.group(1)
-        if m_atualizacao:
-            detalhe["ultima_atualizacao"] = m_atualizacao.group(1)
-        if m_protocolo:
-            detalhe["protocolo_principal"] = m_protocolo.group(1)
+        if r.status_code != 200:
+            return {}
+        dados = r.json()
+        informacoes = (dados.get("informacoes") or [{}])[0]
+        timeline = dados.get("acompanhamentoDetalhado") or []
+        resultado = ""
+        if timeline and timeline[-1].get("textoFluxo"):
+            resultado = timeline[-1]["textoFluxo"]
+        return {
+            "descricao": informacoes.get("descricaoCodificacao", ""),
+            "prazo": informacoes.get("conclusaoDesejada", ""),
+            "ultima_atualizacao": informacoes.get("ultimaAtualizacao", ""),
+            "resultado": resultado,
+        }
     except Exception as e:
-        print(f"  ⚠️ [{cliente}] Não consegui abrir detalhe da solicitação {numero}: {e}")
-        _salvar_debug(driver, f"{cliente}_detalhe_{numero}")
-    return detalhe
+        print(f"  ⚠️ Erro ao buscar detalhe da solicitação {numero}: {e}")
+        return {}
 
 
 # --- GOOGLE SHEETS: LEITURA/ESCRITA DA ABA "Protocolos" ---
@@ -289,7 +191,7 @@ def _montar_servico_gmail():
         return None, None
 
 
-def enviar_alerta_email(cliente, numero_solicitacao, descricao, uc_codigo):
+def enviar_alerta_email(cliente, numero_solicitacao, tipo, uc_codigo):
     servico, remetente = _montar_servico_gmail()
     if not servico:
         return False
@@ -301,7 +203,7 @@ def enviar_alerta_email(cliente, numero_solicitacao, descricao, uc_codigo):
 
     try:
         corpo = (
-            f"A solicitação {numero_solicitacao} ({descricao}) do cliente {cliente.upper()} "
+            f"A solicitação {numero_solicitacao} ({tipo}) do cliente {cliente.upper()} "
             f"(UC {uc_codigo}) foi finalizada na Coelba.\n\n"
             f"Planilha: https://docs.google.com/spreadsheets/d/{PROTOCOLOS_SPREADSHEET_ID}/edit"
         )
@@ -324,12 +226,13 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
     index, total_linhas = carregar_index_protocolos(aba)
     proxima_linha = total_linhas + 1
 
-    driver = configurar_driver()
     novos = 0
     atualizados = 0
     alertas = 0
+    driver = None
 
     try:
+        driver = configurar_driver()
         driver.get("https://agenciavirtual.neoenergia.com/#/login")
         time.sleep(4)
         WebDriverWait(driver, 30).until(lambda d: d.execute_script("return document.readyState") == "complete")
@@ -341,7 +244,11 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
 
         token_ne_se = bearer_token.split(":")[1].split(",")[0].strip(' "{}')
         print(f"  ✅ [{cliente}] Login realizado!")
+    finally:
+        if driver:
+            driver.quit()
 
+    try:
         ucs = obter_ucs_cliente(login_user, token_ne_se)
         if not ucs:
             print(f"  ⚠️ [{cliente}] Nenhuma UC encontrada.")
@@ -352,74 +259,76 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
 
         for uc_codigo in ucs:
             print(f"  [{cliente}] Consultando solicitações da UC {uc_codigo}...")
-            if not navegar_para_unidade(driver, uc_codigo, cliente):
-                continue
-            if not abrir_acompanhe_solicitacoes(driver, cliente, uc_codigo):
+            protocolo = obter_protocolo_uc(login_user, uc_codigo, token_ne_se)
+            if not protocolo:
                 continue
 
-            solicitacoes = listar_todas_solicitacoes(driver, cliente, uc_codigo)
+            solicitacoes = consultar_solicitacoes_uc(login_user, uc_codigo, protocolo, token_ne_se)
+            agora = datetime.now().strftime("%d/%m/%Y %H:%M")
+
             for s in solicitacoes:
-                numero = s["numero"]
-                situacao = s["situacao"]
-                descricao = s["descricao"]
-                data_solicitacao = s["data"]
+                numero = str(s.get("numSolicitacao", "")).strip()
+                tipo = s.get("tipoSolicitacao", "")
+                data_solicitacao = s.get("datSolicitacao", "")
+                situacao = s.get("statusSolicitacao", "")
+                if not numero:
+                    continue
+
                 chave = (cliente.upper(), numero)
                 registro = index.get(chave)
 
                 if registro is None:
-                    detalhe = buscar_detalhe_solicitacao(driver, numero, cliente)
-                    agora = datetime.now().strftime("%d/%m/%Y %H:%M")
+                    detalhe = buscar_detalhe_solicitacao(login_user, uc_codigo, numero, protocolo, token_ne_se)
                     alerta_enviado = "NÃO"
                     if situacao.lower() == "finalizada":
-                        if enviar_alerta_email(cliente, numero, descricao, uc_codigo):
+                        if enviar_alerta_email(cliente, numero, tipo, uc_codigo):
                             alerta_enviado = "SIM"
                         alertas += 1
                     linha_valores = [
-                        cliente.upper(), login_user, uc_codigo, numero,
-                        identificar_tipo(numero), descricao, data_solicitacao, situacao,
-                        detalhe.get("prazo", ""), agora, alerta_enviado, agora, "",
+                        cliente.upper(), login_user, uc_codigo, numero, tipo,
+                        detalhe.get("descricao", ""), data_solicitacao, situacao,
+                        detalhe.get("prazo", ""), detalhe.get("ultima_atualizacao", "") or agora,
+                        alerta_enviado, agora, "", detalhe.get("resultado", ""),
                     ]
                     novas_linhas_buffer.append(linha_valores)
                     index[chave] = {"linha": proxima_linha, "situacao": situacao, "alerta_enviado": alerta_enviado}
                     proxima_linha += 1
                     novos += 1
-                    # volta pra listagem antes de continuar checando outras solicitações da mesma UC
-                    abrir_acompanhe_solicitacoes(driver, cliente, uc_codigo)
 
                 elif registro["situacao"] != situacao:
-                    detalhe = buscar_detalhe_solicitacao(driver, numero, cliente)
-                    agora = datetime.now().strftime("%d/%m/%Y %H:%M")
+                    detalhe = buscar_detalhe_solicitacao(login_user, uc_codigo, numero, protocolo, token_ne_se)
                     alerta_enviado = registro["alerta_enviado"]
                     if situacao.lower() == "finalizada" and alerta_enviado != "SIM":
-                        if enviar_alerta_email(cliente, numero, descricao, uc_codigo):
+                        if enviar_alerta_email(cliente, numero, tipo, uc_codigo):
                             alerta_enviado = "SIM"
                         alertas += 1
                     atualizacoes_buffer.append((
                         registro["linha"],
-                        [situacao, detalhe.get("prazo", ""), agora, alerta_enviado],
+                        detalhe.get("descricao", ""),
+                        [situacao, detalhe.get("prazo", ""), detalhe.get("ultima_atualizacao", "") or agora, alerta_enviado],
+                        detalhe.get("resultado", ""),
                     ))
                     index[chave]["situacao"] = situacao
                     index[chave]["alerta_enviado"] = alerta_enviado
                     atualizados += 1
-                    abrir_acompanhe_solicitacoes(driver, cliente, uc_codigo)
 
         if novas_linhas_buffer:
             aba.append_rows(novas_linhas_buffer, value_input_option="USER_ENTERED")
         if atualizacoes_buffer:
-            updates = [
-                {"range": f"H{linha}:K{linha}", "values": [valores]}
-                for linha, valores in atualizacoes_buffer
-            ]
+            updates = []
+            for linha, descricao, valores_hk, resultado in atualizacoes_buffer:
+                if descricao:
+                    updates.append({"range": f"F{linha}", "values": [[descricao]]})
+                updates.append({"range": f"H{linha}:K{linha}", "values": [valores_hk]})
+                if resultado:
+                    updates.append({"range": f"N{linha}", "values": [[resultado]]})
             aba.batch_update(updates, value_input_option="USER_ENTERED")
 
         return True, novos, atualizados, alertas
 
     except Exception as e:
         print(f"  ❌ [{cliente}] Erro inesperado: {e}")
-        _salvar_debug(driver, f"{cliente}_fatal")
         return False, novos, atualizados, alertas
-    finally:
-        driver.quit()
 
 
 # --- FUNÇÃO PRINCIPAL CHAMADA PELO STREAMLIT ---

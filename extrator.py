@@ -3,6 +3,7 @@ import sys
 import time
 import json
 import shutil
+import platform
 import base64
 import requests
 import pandas as pd
@@ -64,16 +65,18 @@ def configurar_driver():
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36")
     chrome_options.add_argument("--log-level=3")
-
-    # Parâmetros vitais para nuvem / container Linux
     chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-setuid-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--no-zygote")
-    chrome_options.add_argument("--single-process")
     chrome_options.add_argument("--disable-extensions")
-    chrome_options.add_argument("--disable-software-rasterizer")
+
+    # --no-zygote/--single-process travam o Chrome no Windows (dev local);
+    # só fazem sentido no container Linux do Streamlit Cloud.
+    if platform.system() == "Linux":
+        chrome_options.add_argument("--disable-setuid-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--no-zygote")
+        chrome_options.add_argument("--single-process")
+        chrome_options.add_argument("--disable-software-rasterizer")
 
     # Selenium Manager (Selenium 4.6+) baixa automaticamente o Chrome for Testing
     # + ChromeDriver compativel, sem depender de pacotes do sistema operacional

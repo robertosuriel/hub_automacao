@@ -354,7 +354,11 @@ elif "Acompanhar Protocolos" in modulo_selecionado:
                 else:
                     st.error(f"**{cli}**: {status}")
 
-                for img_name in [f"erro_protocolo_protocolo_{cli.lower()}.png"]:
+                for img_name in [
+                    f"erro_sem_token_protocolo_{cli.lower()}.png",
+                    f"erro_botao_protocolo_{cli.lower()}.png",
+                    f"erro_fatal_protocolo_{cli.lower()}.png",
+                ]:
                     if os.path.exists(img_name):
                         st.error(f"📸 O robô travou nesta tela (Conta {cli}):")
                         st.image(img_name)
