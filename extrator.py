@@ -56,28 +56,45 @@ def autenticar_drive():
     creds = service_account.Credentials.from_service_account_file(credentials_path, scopes=SCOPES)
     return build("drive", "v3", credentials=creds)
 
+def diagnosticar_chrome():
+    """Imprime no log por que o Chrome fecha ao iniciar (libs faltando, erro de execução)."""
+    import subprocess
+    from selenium.webdriver.common.selenium_manager import SeleniumManager
+    try:
+        paths = SeleniumManager().binary_paths(["--browser", "chrome"])
+        browser = paths.get("browser_path")
+        print(f"  [DIAG] chrome={browser} driver={paths.get('driver_path')}")
+        if not browser:
+            return
+        ldd = subprocess.run(["ldd", browser], capture_output=True, text=True, timeout=30)
+        faltando = [l.strip() for l in ldd.stdout.splitlines() if "not found" in l]
+        print(f"  [DIAG] libs faltando: {faltando or 'nenhuma'}")
+        run = subprocess.run([browser, "--headless=new", "--no-sandbox", "--disable-gpu", "--dump-dom", "about:blank"],
+                             capture_output=True, text=True, timeout=60)
+        print(f"  [DIAG] chrome exit={run.returncode} stderr={run.stderr.strip()[-1500:]}")
+    except Exception as e:
+        print(f"  [DIAG] falha no diagnóstico: {e}")
+
 def configurar_driver():
     chrome_options = Options()
-    # Headless sem sufixo =new para compatibilidade com versões antigas do Chromium
-    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36")
     chrome_options.add_argument("--log-level=3")
 
-    # Parâmetros vitais para nuvem / container Linux
+    # Flags para container Linux. --single-process e --no-zygote derrubam o Chrome atual ao iniciar.
     chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-setuid-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--no-zygote")
-    chrome_options.add_argument("--single-process")
     chrome_options.add_argument("--disable-extensions")
-    chrome_options.add_argument("--disable-software-rasterizer")
 
-    # Selenium Manager (Selenium 4.6+) baixa automaticamente o Chrome for Testing
-    # + ChromeDriver compativel, sem depender de pacotes do sistema operacional
-    return webdriver.Chrome(options=chrome_options)
+    # Selenium Manager baixa o Chrome for Testing + ChromeDriver compativel
+    try:
+        return webdriver.Chrome(options=chrome_options)
+    except Exception:
+        diagnosticar_chrome()
+        raise
 
 def realizar_login_selenium_original(driver, login_user, login_password, cliente):
     try:
