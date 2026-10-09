@@ -39,6 +39,7 @@ load_dotenv(env_path)
 
 credentials_path = os.path.join(base_path, "credentials.json")
 df_lock = Lock()
+chrome_lock = Lock()
 
 SPREADSHEET_ID = "1Ut5Y0LstIP7nhv7Jzyywc7SS7ObIPlO-3yEg-J8Pp5o"
 PASTA_DRIVE_ID = "1wbPLpNj_h1i3nLCEhVx2vdYyDiIval-9"
@@ -321,30 +322,31 @@ def processar_cliente(cliente, login_user, login_password, worksheet):
     for img in [f"erro_sem_token_{cliente}.png", f"erro_botao_{cliente}.png", f"erro_fatal_{cliente}.png"]:
         if os.path.exists(img): os.remove(img)
 
-    while tentativa_atual <= MAX_TENTATIVAS_LOGIN:
-        print(f"  [{cliente.upper()}] Tentativa {tentativa_atual}/{MAX_TENTATIVAS_LOGIN}...")
-        driver = configurar_driver()
-        try:
-            driver.get("https://agenciavirtual.neoenergia.com/#/login")
-            time.sleep(4) 
-            WebDriverWait(driver, 30).until(lambda d: d.execute_script("return document.readyState") == "complete")
+    with chrome_lock:
+        while tentativa_atual <= MAX_TENTATIVAS_LOGIN:
+            print(f"  [{cliente.upper()}] Tentativa {tentativa_atual}/{MAX_TENTATIVAS_LOGIN}...")
+            driver = configurar_driver()
+            try:
+                driver.get("https://agenciavirtual.neoenergia.com/#/login")
+                time.sleep(4) 
+                WebDriverWait(driver, 30).until(lambda d: d.execute_script("return document.readyState") == "complete")
             
-            bearer_token = realizar_login_selenium_original(driver, login_user, login_password, cliente)
+                bearer_token = realizar_login_selenium_original(driver, login_user, login_password, cliente)
             
-            if bearer_token:
-                tokenNeSe = bearer_token.split(":")[1].split(",")[0].strip(' "{}')
-                print("  ✅ Login realizado!")
-                driver.quit()
-                break
-            else:
-                print("  ⚠️ Token não obtido.")
-        except Exception as e:
-             print(f"  ⚠️ Erro na tentativa: {e}")
+                if bearer_token:
+                    tokenNeSe = bearer_token.split(":")[1].split(",")[0].strip(' "{}')
+                    print("  ✅ Login realizado!")
+                    driver.quit()
+                    break
+                else:
+                    print("  ⚠️ Token não obtido.")
+            except Exception as e:
+                 print(f"  ⚠️ Erro na tentativa: {e}")
              
-        driver.quit()
-        tentativa_atual += 1
-        if tentativa_atual <= MAX_TENTATIVAS_LOGIN:
-             time.sleep(5)
+            driver.quit()
+            tentativa_atual += 1
+            if tentativa_atual <= MAX_TENTATIVAS_LOGIN:
+                 time.sleep(5)
 
     if not tokenNeSe:
         print(f"❌ Falha no login de {cliente}.")
@@ -357,18 +359,26 @@ def processar_cliente(cliente, login_user, login_password, worksheet):
         r_ucs = requests.get(f"https://apineprd.neoenergia.com/imoveis/1.1.0/clientes/{login_user}/ucs", 
                              params={"documento": login_user, "canalSolicitante": "AGC", "distribuidora": "COELBA", "usuario": "WSO2_CONEXAO", "indMaisUcs": "X", "tipoPerfil": "1"}, 
                              headers=headers_api, timeout=30)
+        if r_ucs.status_code != 200:
+            print(f"  ❌ [{cliente.upper()}] Lista de UCs: HTTP {r_ucs.status_code} - {r_ucs.text[:200]}")
+            return False
         codigos_uc = [uc['uc'] for uc in r_ucs.json().get("ucs", [])]
-    except:
+    except Exception as e:
+        print(f"  ❌ [{cliente.upper()}] Erro ao obter a lista de UCs: {type(e).__name__}: {e}")
         return False
 
-    if not codigos_uc: return False
+    if not codigos_uc:
+        print(f"  ❌ [{cliente.upper()}] A API não retornou nenhuma UC para este login.")
+        return False
 
     try:
         r_proto = requests.get("https://apineprd.neoenergia.com/protocolo/1.1.0/obterProtocolo",
                                params={"distribuidora": "COEL", "canalSolicitante": "AGC", "documento": login_user, "codCliente": codigos_uc[0], "recaptchaAnl": "true", "regiao": "NE"},
                                headers=headers_api, timeout=30)
         protocolo = r_proto.json().get('protocoloLegado')
-    except: protocolo = None
+    except Exception as e:
+        print(f"  ⚠️ [{cliente.upper()}] Protocolo não obtido ({type(e).__name__}: {e}); seguindo sem protocolo.")
+        protocolo = None
 
     dados_coletados = []
     ucs_com_falha = []
