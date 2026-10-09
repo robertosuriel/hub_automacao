@@ -3,6 +3,7 @@ import sys
 import time
 import json
 import shutil
+import socket
 import base64
 import requests
 import pandas as pd
@@ -46,6 +47,45 @@ PASTA_DRIVE_ID = "1wbPLpNj_h1i3nLCEhVx2vdYyDiIval-9"
 EXPORT_COLUMNS = ["codigo_cliente", "mesReferencia", "numeroFatura", "emissão", "vencimento", "valor", "situação"]
 
 # --- FUNÇÕES AUXILIARES ---
+
+_getaddrinfo_original = socket.getaddrinfo
+_doh_cache = {}
+
+def _resolver_via_doh(host):
+    """Descobre o IP por DNS sobre HTTPS quando o DNS do servidor falha para o host."""
+    if host in _doh_cache:
+        return _doh_cache[host]
+    ips = []
+    for url in ("https://1.1.1.1/dns-query", "https://8.8.8.8/resolve"):
+        try:
+            r = requests.get(url, params={"name": host, "type": "A"}, headers={"accept": "application/dns-json"}, timeout=10)
+            ips = [a["data"] for a in r.json().get("Answer", []) if a.get("type") == 1]
+            if ips:
+                print(f"  [DNS] {host} -> {ips[0]} (via {url.split('/')[2]})")
+                break
+            print(f"  [DNS] {url.split('/')[2]} sem resposta A para {host}")
+        except Exception as e:
+            print(f"  [DNS] DoH {url.split('/')[2]} falhou: {type(e).__name__}")
+    _doh_cache[host] = ips
+    return ips
+
+def _getaddrinfo_com_fallback(host, *args, **kwargs):
+    try:
+        return _getaddrinfo_original(host, *args, **kwargs)
+    except socket.gaierror:
+        if isinstance(host, str) and host.endswith("neoenergia.com"):
+            ips = _resolver_via_doh(host)
+            if ips:
+                return _getaddrinfo_original(ips[0], *args, **kwargs)
+        raise
+
+socket.getaddrinfo = _getaddrinfo_com_fallback
+
+def _causa_raiz(e):
+    while (e.__cause__ or e.__context__) is not None:
+        e = e.__cause__ or e.__context__
+    return f"{type(e).__name__}: {str(e)[:140]}"
+
 
 def autenticar_google_sheets():
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -322,7 +362,7 @@ def get_com_retentativa(url, rotulo, tentativas=4, espera=5, **kwargs):
                 return r
             print(f"  ⚠️ {rotulo}: HTTP {r.status_code} (tentativa {n}/{tentativas})")
         except Exception as e:
-            print(f"  ⚠️ {rotulo}: {type(e).__name__} (tentativa {n}/{tentativas})")
+            print(f"  ⚠️ {rotulo}: {_causa_raiz(e)} (tentativa {n}/{tentativas})")
         if n < tentativas:
             time.sleep(espera)
     return None
