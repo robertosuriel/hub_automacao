@@ -313,6 +313,20 @@ def preparar_dados_para_exportacao(df):
     
     return df
 
+def get_com_retentativa(url, rotulo, tentativas=4, espera=5, **kwargs):
+    """GET que repete em erro de rede (DNS/timeout) e em 401/403/429/5xx; devolve a Response ou None."""
+    for n in range(1, tentativas + 1):
+        try:
+            r = requests.get(url, **kwargs)
+            if r.status_code == 200 or not (r.status_code in (401, 403, 429) or r.status_code >= 500):
+                return r
+            print(f"  ⚠️ {rotulo}: HTTP {r.status_code} (tentativa {n}/{tentativas})")
+        except Exception as e:
+            print(f"  ⚠️ {rotulo}: {type(e).__name__} (tentativa {n}/{tentativas})")
+        if n < tentativas:
+            time.sleep(espera)
+    return None
+
 def processar_cliente(cliente, login_user, login_password, worksheet):
     MAX_TENTATIVAS_LOGIN = 3
     tentativa_atual = 1
@@ -352,32 +366,36 @@ def processar_cliente(cliente, login_user, login_password, worksheet):
         print(f"❌ Falha no login de {cliente}.")
         return False
 
+    time.sleep(5)
     print("  Obtendo dados de UCs e Faturas...")
     headers_api = {"User-Agent": "Mozilla/5.0", "Authorization": "Bearer " + tokenNeSe}
     
+    r_ucs = get_com_retentativa(
+        f"https://apineprd.neoenergia.com/imoveis/1.1.0/clientes/{login_user}/ucs", f"[{cliente.upper()}] Lista de UCs",
+        params={"documento": login_user, "canalSolicitante": "AGC", "distribuidora": "COELBA", "usuario": "WSO2_CONEXAO", "indMaisUcs": "X", "tipoPerfil": "1"},
+        headers=headers_api, timeout=30)
+    if r_ucs is None or r_ucs.status_code != 200:
+        motivo = "sem resposta" if r_ucs is None else f"HTTP {r_ucs.status_code} - {r_ucs.text[:200]}"
+        print(f"  ❌ [{cliente.upper()}] Não foi possível obter a lista de UCs: {motivo}")
+        return False
     try:
-        r_ucs = requests.get(f"https://apineprd.neoenergia.com/imoveis/1.1.0/clientes/{login_user}/ucs", 
-                             params={"documento": login_user, "canalSolicitante": "AGC", "distribuidora": "COELBA", "usuario": "WSO2_CONEXAO", "indMaisUcs": "X", "tipoPerfil": "1"}, 
-                             headers=headers_api, timeout=30)
-        if r_ucs.status_code != 200:
-            print(f"  ❌ [{cliente.upper()}] Lista de UCs: HTTP {r_ucs.status_code} - {r_ucs.text[:200]}")
-            return False
         codigos_uc = [uc['uc'] for uc in r_ucs.json().get("ucs", [])]
     except Exception as e:
-        print(f"  ❌ [{cliente.upper()}] Erro ao obter a lista de UCs: {type(e).__name__}: {e}")
+        print(f"  ❌ [{cliente.upper()}] Resposta inválida na lista de UCs: {type(e).__name__}: {e}")
         return False
 
     if not codigos_uc:
         print(f"  ❌ [{cliente.upper()}] A API não retornou nenhuma UC para este login.")
         return False
 
+    r_proto = get_com_retentativa(
+        "https://apineprd.neoenergia.com/protocolo/1.1.0/obterProtocolo", f"[{cliente.upper()}] Protocolo",
+        params={"distribuidora": "COEL", "canalSolicitante": "AGC", "documento": login_user, "codCliente": codigos_uc[0], "recaptchaAnl": "true", "regiao": "NE"},
+        headers=headers_api, timeout=30)
     try:
-        r_proto = requests.get("https://apineprd.neoenergia.com/protocolo/1.1.0/obterProtocolo",
-                               params={"distribuidora": "COEL", "canalSolicitante": "AGC", "documento": login_user, "codCliente": codigos_uc[0], "recaptchaAnl": "true", "regiao": "NE"},
-                               headers=headers_api, timeout=30)
         protocolo = r_proto.json().get('protocoloLegado')
     except Exception as e:
-        print(f"  ⚠️ [{cliente.upper()}] Protocolo não obtido ({type(e).__name__}: {e}); seguindo sem protocolo.")
+        print(f"  ⚠️ [{cliente.upper()}] Protocolo não obtido ({type(e).__name__}); seguindo sem protocolo.")
         protocolo = None
 
     dados_coletados = []
