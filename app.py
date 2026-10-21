@@ -11,9 +11,10 @@ if "google_credentials" in st.secrets:
         json.dump(dict(st.secrets["google_credentials"]), f)
             
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+import pandas as pd
 from extrator import processar_cliente
 from gerador_pagos import processar_faturas_pagas, gerar_pdf_pago_upload
-from protocolos import processar_protocolos
+from protocolos import processar_protocolos, carregar_dataframe_protocolos
 
 load_dotenv(".env")
 
@@ -196,7 +197,7 @@ if "Extrair Faturas" in modulo_selecionado:
                     if sucesso:
                         resultados[cliente] = "✅ Sucesso"
                     else:
-                        resultados[cliente] = "❌ Falha no Login"
+                        resultados[cliente] = "❌ Falha (login ou consulta de faturas — veja o log acima)"
                         
                         for img_name in [f"erro_sem_token_{cliente}.png", f"erro_botao_{cliente}.png", f"erro_fatal_{cliente}.png"]:
                             if os.path.exists(img_name):
@@ -314,6 +315,94 @@ elif "Acompanhar Protocolos" in modulo_selecionado:
         "(confirmado no manual da Coelba). Continue registrando esses na aba "
         "'Falta de Energia (Manual)' da planilha."
     )
+    st.divider()
+
+    # ---------- PAINEL VISUAL ----------
+    st.subheader("📋 Visão Geral dos Protocolos")
+    try:
+        df_protocolos = carregar_dataframe_protocolos()
+    except Exception as e:
+        df_protocolos = None
+        st.error(f"Não consegui carregar a planilha agora: {e}")
+
+    if df_protocolos is not None and not df_protocolos.empty:
+        situacao_col = df_protocolos["Situacao"] if "Situacao" in df_protocolos.columns else pd.Series(dtype=str)
+        dias_col = df_protocolos["Dias p/ prazo"] if "Dias p/ prazo" in df_protocolos.columns else pd.Series(dtype=float)
+
+        total = len(df_protocolos)
+        finalizados = int((situacao_col == "Finalizada").sum())
+        abertos = total - finalizados
+        vencendo = int(((dias_col <= 3) & (dias_col >= 0)).sum())
+        vencidos = int((dias_col < 0).sum())
+
+        col_a, col_b, col_c, col_d = st.columns(4)
+        col_a.metric("Total", total)
+        col_b.metric("Em aberto", abertos)
+        col_c.metric("Vencendo (≤3 dias)", vencendo)
+        col_d.metric("Vencidos", vencidos)
+
+        col_f1, col_f2, col_f3 = st.columns([1, 1, 2])
+        with col_f1:
+            opcoes_cliente = sorted(df_protocolos["Cliente"].unique()) if "Cliente" in df_protocolos.columns else []
+            filtro_cliente = st.multiselect("Cliente:", opcoes_cliente, default=opcoes_cliente)
+        with col_f2:
+            filtro_situacao = st.selectbox("Situação:", ["Todas", "Em aberto", "Finalizadas"])
+        with col_f3:
+            busca = st.text_input("Buscar (nº, endereço, tipo...):", "")
+
+        df_filtrado = df_protocolos
+        if "Cliente" in df_filtrado.columns:
+            df_filtrado = df_filtrado[df_filtrado["Cliente"].isin(filtro_cliente)]
+        if filtro_situacao == "Em aberto":
+            df_filtrado = df_filtrado[df_filtrado["Situacao"] != "Finalizada"]
+        elif filtro_situacao == "Finalizadas":
+            df_filtrado = df_filtrado[df_filtrado["Situacao"] == "Finalizada"]
+        if busca:
+            mascara = df_filtrado.apply(lambda linha: busca.lower() in " ".join(linha.astype(str)).lower(), axis=1)
+            df_filtrado = df_filtrado[mascara]
+
+        colunas_exibir = [
+            "Cliente", "No da Solicitacao", "Tipo", "Descricao", "Situacao", "Prazo",
+            "Dias p/ prazo", "Resultado", "Endereco", "Situacao interna", "Observacoes internas",
+        ]
+        colunas_exibir = [c for c in colunas_exibir if c in df_filtrado.columns]
+
+        def cor_situacao(valor):
+            if valor == "Finalizada":
+                return "background-color: #CEEAD6; color: #0D5235"
+            if valor == "Em andamento":
+                return "background-color: #FDE293; color: #6B3F05"
+            return ""
+
+        def cor_prazo(valor):
+            if pd.isna(valor):
+                return ""
+            if valor < 0:
+                return "background-color: #F4C7C3; color: #8C1D18"
+            if valor <= 3:
+                return "background-color: #FEEFC3; color: #6B3F05"
+            return ""
+
+        # st.dataframe com Styler não respeita Styler.format() pra exibição (só
+        # usa .map pra cor) — por isso convertemos o texto ANTES, separado do
+        # cálculo de cor, que continua baseado no valor numérico original.
+        dias_numericos = df_filtrado["Dias p/ prazo"] if "Dias p/ prazo" in colunas_exibir else None
+        df_exibicao = df_filtrado[colunas_exibir].copy()
+        if dias_numericos is not None:
+            df_exibicao["Dias p/ prazo"] = dias_numericos.apply(lambda v: "" if pd.isna(v) else f"{int(v)} d")
+
+        estilo = df_exibicao.style
+        if "Situacao" in colunas_exibir:
+            estilo = estilo.map(cor_situacao, subset=["Situacao"])
+        if dias_numericos is not None:
+            cores_prazo = dias_numericos.apply(cor_prazo)
+            estilo = estilo.apply(lambda _: cores_prazo, subset=["Dias p/ prazo"])
+
+        st.dataframe(estilo, use_container_width=True, height=450, hide_index=True)
+        st.caption(f"Mostrando {len(df_filtrado)} de {total} protocolo(s).")
+    else:
+        st.info("Nenhum protocolo na planilha ainda. Rode a consulta abaixo pra começar a popular.")
+
     st.divider()
 
     if st.button("▶️ Iniciar Consulta de Protocolos", type="primary", use_container_width=True):

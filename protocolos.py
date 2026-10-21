@@ -2,9 +2,11 @@ import os
 import sys
 import time
 import base64
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from email.mime.text import MIMEText
 
+import pandas as pd
 import requests
 from dotenv import load_dotenv
 from selenium.webdriver.support.ui import WebDriverWait
@@ -33,9 +35,16 @@ credentials_path = os.path.join(base_path, "credentials.json")
 PROTOCOLOS_SPREADSHEET_ID = "1_tGDCBzQ_7Swwf4XKfWsU1mv0XHNRlB3jEZYpLaN-yk"
 ABA_PROTOCOLOS = "Protocolos"
 
-# Colunas da aba "Protocolos" (nessa ordem, A..M):
-# Cliente | CNPJ | UC / Codigo do Cliente | No da Solicitacao | Tipo | Descricao |
-# Data da Solicitacao | Situacao | Prazo | Ultima Atualizacao | Alerta Enviado | Descoberto em | Observacoes
+# Colunas da aba "Protocolos" (nessa ordem, A..P):
+# Cliente | CNPJ | UC (referencia) | No da Solicitacao | Tipo | Descricao |
+# Data da Solicitacao | Situacao | Prazo | Ultima Atualizacao | Alerta Enviado |
+# Descoberto em | Observacoes | Resultado | Historico | Endereco
+#
+# IMPORTANTE sobre a coluna "UC (referencia)": o pedidos-header NAO e por UC
+# (confirmado: a mesma lista de ate 30 solicitacoes recentes volta
+# independente de qual UC valida da conta voce passa). Entao essa coluna guarda
+# so a UC usada na chamada, nao necessariamente a UC "dona" da solicitacao.
+# O campo confiavel pra identificar o imovel e o Endereco (coluna P).
 
 
 # --- APIs da Agência Virtual (mesmo backend usado pelo extrator.py pra faturas) ---
@@ -58,8 +67,10 @@ def obter_ucs_cliente(login_user, token_ne_se):
 
 
 def obter_protocolo_uc(login_user, uc_codigo, token_ne_se):
-    """Mesmo endpoint que o extrator.py usa pra gerar o 'protocoloLegado' das faturas,
-    aqui chamado por UC pra usar na consulta de solicitações dessa UC."""
+    """Gera um 'protocolo' de sessão (registro Salesforce, válido pra conta
+    inteira, não só a UC usada aqui). ATENÇÃO: cada chamada deste endpoint cria
+    um registro "Contato" que entra na própria lista do pedidos-header —
+    chame só uma vez por execução (nunca em loop por UC)."""
     headers_api = {"User-Agent": "Mozilla/5.0", "Authorization": "Bearer " + token_ne_se}
     try:
         r = requests.get(
@@ -72,40 +83,46 @@ def obter_protocolo_uc(login_user, uc_codigo, token_ne_se):
         )
         return r.json().get("protocoloLegado")
     except Exception as e:
-        print(f"  ⚠️ Erro ao obter protocolo da UC {uc_codigo}: {e}")
+        print(f"  ⚠️ Erro ao obter protocolo: {e}")
         return None
 
 
-def consultar_solicitacoes_uc(login_user, uc_codigo, protocolo, token_ne_se):
-    """Endpoint real por trás da tela 'Acompanhe Suas Solicitações' (descoberto via
-    DevTools). Evita ter que navegar o site com Selenium pra isso."""
+def consultar_solicitacoes_conta(login_user, uc_referencia, protocolo, token_ne_se):
+    """pedidos-header retorna a lista da CONTA inteira (confirmado: UCs
+    diferentes retornam a mesma lista item a item), limitada aos ~30 itens
+    mais recentes, misturando solicitações reais com registros de "Contato"
+    (estrutura "P", gerados a cada obterProtocolo). Só precisa ser chamado
+    uma vez por execução, com qualquer UC válida da conta.
+
+    Não captura exceção aqui de propósito: deixa propagar pro chamador
+    registrar o erro, em vez de engolir silenciosamente."""
     headers_api = {"User-Agent": "Mozilla/5.0", "Authorization": "Bearer " + token_ne_se, "Accept": "application/json"}
-    try:
-        r = requests.get(
-            f"https://apineprd.neoenergia.com/multilogin/2.0.0/servicos/acompanhamento-solicitacoes/{login_user}/pedidos-header",
-            params={
-                "regiao": "NE", "distribuidora": "COELBA", "codigo": uc_codigo, "protocolo": protocolo,
-                "tipificacao": "1011601", "documentoSolicitante": login_user,
-                "canalSolicitante": "AGC", "usuario": "WSO2_CONEXAO", "tipoPerfil": "1",
-            },
-            headers=headers_api, timeout=30,
-        )
-        if r.status_code != 200:
-            return []
-        dados = r.json().get("solicitacoes", []) or []
-        # "estrutura": "P" são registros de contato/log gerados a cada consulta à
-        # página (tipo "Contato"), não são reclamações/solicitações reais.
-        return [s for s in dados if s.get("estrutura") == "N"]
-    except Exception as e:
-        print(f"  ⚠️ Erro ao consultar solicitações da UC {uc_codigo}: {e}")
-        return []
+    r = requests.get(
+        f"https://apineprd.neoenergia.com/multilogin/2.0.0/servicos/acompanhamento-solicitacoes/{login_user}/pedidos-header",
+        params={
+            "regiao": "NE", "distribuidora": "COELBA", "codigo": uc_referencia, "protocolo": protocolo,
+            "tipificacao": "1011601", "documentoSolicitante": login_user,
+            "canalSolicitante": "AGC", "usuario": "WSO2_CONEXAO", "tipoPerfil": "1",
+        },
+        headers=headers_api, timeout=30,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
+    corpo = r.json()
+    if corpo.get("retorno", {}).get("tipo") == "E":
+        raise RuntimeError(f"Erro retornado pela API: {corpo.get('retorno', {}).get('mensagem')}")
+    dados = corpo.get("solicitacoes", []) or []
+    # "estrutura": "P" são registros de contato/log gerados a cada consulta de
+    # protocolo (tipo "Contato"), não são reclamações/solicitações reais.
+    return [s for s in dados if s.get("estrutura") == "N"]
 
 
-def buscar_detalhe_solicitacao(login_user, uc_codigo, numero, protocolo, token_ne_se):
-    """Endpoint por trás do detalhe expandido de uma solicitação (prazo, última
-    atualização real e o histórico completo, incluindo o resultado quando
-    finalizada). Só vale a pena chamar pra solicitações novas ou que mudaram
-    de situação (evita uma chamada extra por solicitação já conhecida)."""
+def buscar_detalhe_solicitacao(login_user, uc_referencia, numero, protocolo, token_ne_se):
+    """Detalhe completo de uma solicitação (situação atual, endereço, prazo,
+    última atualização real e histórico, incluindo o resultado quando
+    finalizada). Funciona com qualquer UC válida da conta (não precisa ser a
+    UC "dona" da solicitação — confirmado). O tempo de resposta varia bastante
+    (observado entre ~1,5s e ~33s), por isso o timeout é mais folgado aqui."""
     headers_api = {"User-Agent": "Mozilla/5.0", "Authorization": "Bearer " + token_ne_se, "Accept": "application/json"}
     try:
         r = requests.get(
@@ -114,24 +131,45 @@ def buscar_detalhe_solicitacao(login_user, uc_codigo, numero, protocolo, token_n
                 "documento": login_user, "regiao": "NE", "distribuidora": "COELBA",
                 "tipoEstrutura": "N", "protocolo": protocolo, "tipificacao": "1010602",
                 "documentoSolicitante": login_user, "canalSolicitante": "AGC",
-                "usuario": "WSO2_CONEXAO", "codigo": uc_codigo, "protocoloSolicitacao": numero,
+                "usuario": "WSO2_CONEXAO", "codigo": uc_referencia, "protocoloSolicitacao": numero,
                 "tipoPerfil": "1", "geraSsOs": "S",
             },
-            headers=headers_api, timeout=30,
+            headers=headers_api, timeout=45,
         )
         if r.status_code != 200:
+            print(f"  ⚠️ Detalhe da solicitação {numero}: HTTP {r.status_code}")
             return {}
         dados = r.json()
+        if dados.get("retorno", {}).get("tipo") == "E":
+            print(f"  ⚠️ Detalhe da solicitação {numero}: {dados.get('retorno', {}).get('mensagem')}")
+            return {}
+
         informacoes = (dados.get("informacoes") or [{}])[0]
         timeline = dados.get("acompanhamentoDetalhado") or []
         resultado = ""
         if timeline and timeline[-1].get("textoFluxo"):
             resultado = timeline[-1]["textoFluxo"]
+
+        linhas_historico = []
+        for evento in timeline:
+            status = evento.get("statusFluxo", "")
+            data_evento = evento.get("dataFluxo", "")
+            hora_evento = evento.get("horaFluxo", "")
+            texto = evento.get("textoFluxo")
+            linha = f"{data_evento} {hora_evento} — {status}".strip()
+            if texto:
+                linha += f": {texto}"
+            linhas_historico.append(linha)
+        historico = "\n".join(linhas_historico)
+
         return {
+            "situacao_atual": dados.get("situacao", ""),
             "descricao": informacoes.get("descricaoCodificacao", ""),
+            "endereco": informacoes.get("enderecoImovel", ""),
             "prazo": informacoes.get("conclusaoDesejada", ""),
             "ultima_atualizacao": informacoes.get("ultimaAtualizacao", ""),
             "resultado": resultado,
+            "historico": historico,
         }
     except Exception as e:
         print(f"  ⚠️ Erro ao buscar detalhe da solicitação {numero}: {e}")
@@ -144,6 +182,48 @@ def _abrir_aba_protocolos():
     client = autenticar_google_sheets()
     planilha = client.open_by_key(PROTOCOLOS_SPREADSHEET_ID)
     return planilha.worksheet(ABA_PROTOCOLOS)
+
+
+def aplicar_validacao_controle(aba, linha_inicio, linha_fim):
+    """Checkbox (Resolvido, col S) e dropdown (Situacao interna, col T) só nas
+    linhas indicadas. NUNCA aplicar isso adiantado em linhas sem dado — o
+    Sheets grava 'FALSE' de verdade em célula de checkbox vazia, e isso já
+    confundiu a detecção de fim de tabela do Sheets uma vez (linhas novas
+    caindo centenas de linhas abaixo do esperado)."""
+    try:
+        client = autenticar_google_sheets()
+        planilha = client.open_by_key(PROTOCOLOS_SPREADSHEET_ID)
+        sheet_id = aba.id
+        planilha.batch_update({"requests": [
+            {
+                "setDataValidation": {
+                    "range": {"sheetId": sheet_id, "startRowIndex": linha_inicio - 1, "endRowIndex": linha_fim, "startColumnIndex": 18, "endColumnIndex": 19},
+                    "rule": {"condition": {"type": "BOOLEAN"}, "strict": True},
+                }
+            },
+            {
+                "setDataValidation": {
+                    "range": {"sheetId": sheet_id, "startRowIndex": linha_inicio - 1, "endRowIndex": linha_fim, "startColumnIndex": 19, "endColumnIndex": 20},
+                    "rule": {
+                        "condition": {
+                            "type": "ONE_OF_LIST",
+                            "values": [
+                                {"userEnteredValue": "-"},
+                                {"userEnteredValue": "Aguardando Coelba"},
+                                {"userEnteredValue": "Aguardando cliente"},
+                                {"userEnteredValue": "Insatisfeito - abrir nova"},
+                                {"userEnteredValue": "Escalar p/ ANEEL"},
+                                {"userEnteredValue": "Resolvido"},
+                            ],
+                        },
+                        "showCustomUi": True,
+                        "strict": True,
+                    },
+                }
+            },
+        ]})
+    except Exception as e:
+        print(f"  ⚠️ Não consegui aplicar validação de controle nas linhas {linha_inicio}-{linha_fim}: {e}")
 
 
 def carregar_index_protocolos(aba):
@@ -165,6 +245,24 @@ def carregar_index_protocolos(aba):
             "alerta_enviado": linha[10].strip(),
         }
     return index, len(valores)
+
+
+def carregar_dataframe_protocolos():
+    """Lê a aba 'Protocolos' pronta pra exibir no painel do Streamlit."""
+    aba = _abrir_aba_protocolos()
+    valores = aba.get_all_values()
+    if len(valores) < 2:
+        return pd.DataFrame()
+    cabecalho = valores[0]
+    linhas = [
+        linha + [""] * (len(cabecalho) - len(linha))
+        for linha in valores[1:]
+        if linha and len(linha) > 3 and linha[3].strip()
+    ]
+    df = pd.DataFrame(linhas, columns=cabecalho)
+    if "Dias p/ prazo" in df.columns:
+        df["Dias p/ prazo"] = pd.to_numeric(df["Dias p/ prazo"], errors="coerce")
+    return df
 
 
 # --- E-MAIL DE ALERTA (Gmail API com domain-wide delegation) ---
@@ -191,7 +289,7 @@ def _montar_servico_gmail():
         return None, None
 
 
-def enviar_alerta_email(cliente, numero_solicitacao, tipo, uc_codigo):
+def enviar_alerta_email(cliente, numero_solicitacao, tipo):
     servico, remetente = _montar_servico_gmail()
     if not servico:
         return False
@@ -204,7 +302,7 @@ def enviar_alerta_email(cliente, numero_solicitacao, tipo, uc_codigo):
     try:
         corpo = (
             f"A solicitação {numero_solicitacao} ({tipo}) do cliente {cliente.upper()} "
-            f"(UC {uc_codigo}) foi finalizada na Coelba.\n\n"
+            f"foi finalizada na Coelba.\n\n"
             f"Planilha: https://docs.google.com/spreadsheets/d/{PROTOCOLOS_SPREADSHEET_ID}/edit"
         )
         msg = MIMEText(corpo)
@@ -253,75 +351,169 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
         if not ucs:
             print(f"  ⚠️ [{cliente}] Nenhuma UC encontrada.")
             return False, novos, atualizados, alertas
+        uc_referencia = ucs[0]
+
+        protocolo = obter_protocolo_uc(login_user, uc_referencia, token_ne_se)
+        if not protocolo:
+            print(f"  ⚠️ [{cliente}] Não consegui obter protocolo de sessão.")
+            return False, novos, atualizados, alertas
+
+        # 1. Descobre solicitações novas na lista recente da conta (uma chamada só).
+        try:
+            solicitacoes_recentes = consultar_solicitacoes_conta(login_user, uc_referencia, protocolo, token_ne_se)
+        except Exception as e:
+            print(f"  ⚠️ [{cliente}] Erro ao consultar lista de solicitações: {e}")
+            solicitacoes_recentes = []
 
         novas_linhas_buffer = []
-        atualizacoes_buffer = []  # (linha, [situacao, prazo, ultima_atualizacao, alerta_enviado])
+        atualizacoes_buffer = []  # (linha, descricao, [situacao, prazo, ultima_atualizacao, alerta_enviado], resultado, historico, endereco)
+        agora = datetime.now().strftime("%d/%m/%Y %H:%M")
+        vistos_nesta_rodada = set()
 
-        for uc_codigo in ucs:
-            print(f"  [{cliente}] Consultando solicitações da UC {uc_codigo}...")
-            protocolo = obter_protocolo_uc(login_user, uc_codigo, token_ne_se)
-            if not protocolo:
+        for s in solicitacoes_recentes:
+            numero = str(s.get("numSolicitacao", "")).strip()
+            tipo = s.get("tipoSolicitacao", "")
+            data_solicitacao = s.get("datSolicitacao", "")
+            situacao = s.get("statusSolicitacao", "")
+            if not numero:
                 continue
+            vistos_nesta_rodada.add(numero)
 
-            solicitacoes = consultar_solicitacoes_uc(login_user, uc_codigo, protocolo, token_ne_se)
-            agora = datetime.now().strftime("%d/%m/%Y %H:%M")
+            chave = (cliente.upper(), numero)
+            registro = index.get(chave)
 
-            for s in solicitacoes:
-                numero = str(s.get("numSolicitacao", "")).strip()
-                tipo = s.get("tipoSolicitacao", "")
-                data_solicitacao = s.get("datSolicitacao", "")
-                situacao = s.get("statusSolicitacao", "")
-                if not numero:
-                    continue
+            if registro is None:
+                detalhe = buscar_detalhe_solicitacao(login_user, uc_referencia, numero, protocolo, token_ne_se)
+                alerta_enviado = "NÃO"
+                if situacao.lower() == "finalizada":
+                    if enviar_alerta_email(cliente, numero, tipo):
+                        alerta_enviado = "SIM"
+                    alertas += 1
+                linha_valores = [
+                    cliente.upper(), login_user, uc_referencia, numero, tipo,
+                    detalhe.get("descricao", ""), data_solicitacao, situacao,
+                    detalhe.get("prazo", ""), detalhe.get("ultima_atualizacao", "") or agora,
+                    alerta_enviado, agora, "", detalhe.get("resultado", ""), detalhe.get("historico", ""),
+                    detalhe.get("endereco", ""),
+                    # Q..V: Instancia, Protocolo origem, Resolvido, Situacao interna,
+                    # Observacoes internas (controle manual) e Dias p/ prazo (formula,
+                    # recalcula sozinha e já referencia a linha certa).
+                    "1", "", "FALSE", "-", "",
+                    f'=IF(OR(H{proxima_linha}="Finalizada",I{proxima_linha}=""),"",I{proxima_linha}-TODAY())',
+                ]
+                novas_linhas_buffer.append(linha_valores)
+                index[chave] = {"linha": proxima_linha, "situacao": situacao, "alerta_enviado": alerta_enviado}
+                proxima_linha += 1
+                novos += 1
 
-                chave = (cliente.upper(), numero)
-                registro = index.get(chave)
+            elif registro["situacao"] != situacao:
+                detalhe = buscar_detalhe_solicitacao(login_user, uc_referencia, numero, protocolo, token_ne_se)
+                alerta_enviado = registro["alerta_enviado"]
+                if situacao.lower() == "finalizada" and alerta_enviado != "SIM":
+                    if enviar_alerta_email(cliente, numero, tipo):
+                        alerta_enviado = "SIM"
+                    alertas += 1
+                atualizacoes_buffer.append((
+                    registro["linha"],
+                    detalhe.get("descricao", ""),
+                    [situacao, detalhe.get("prazo", ""), detalhe.get("ultima_atualizacao", "") or agora, alerta_enviado],
+                    detalhe.get("resultado", ""),
+                    detalhe.get("historico", ""),
+                    detalhe.get("endereco", ""),
+                ))
+                index[chave]["situacao"] = situacao
+                index[chave]["alerta_enviado"] = alerta_enviado
+                atualizados += 1
 
-                if registro is None:
-                    detalhe = buscar_detalhe_solicitacao(login_user, uc_codigo, numero, protocolo, token_ne_se)
-                    alerta_enviado = "NÃO"
-                    if situacao.lower() == "finalizada":
-                        if enviar_alerta_email(cliente, numero, tipo, uc_codigo):
+        # 2. Solicitações já conhecidas e ainda em aberto que não apareceram na
+        # lista acima podem ter saído da janela de ~30 itens mais recentes
+        # (empurradas por registros de "Contato"). Pra essas, consulta direto
+        # por número via pedidos-detalhe em vez de depender de reaparecerem.
+        abertas_fora_da_lista = [
+            (chave, dados) for chave, dados in index.items()
+            if chave[0] == cliente.upper()
+            and dados["situacao"].strip().lower() != "finalizada"
+            and chave[1] not in vistos_nesta_rodada
+        ]
+        if abertas_fora_da_lista:
+            print(f"  [{cliente}] Checando {len(abertas_fora_da_lista)} solicitação(ões) aberta(s) fora da lista recente...")
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futuros = {
+                    executor.submit(buscar_detalhe_solicitacao, login_user, uc_referencia, chave[1], protocolo, token_ne_se): (chave, dados)
+                    for chave, dados in abertas_fora_da_lista
+                }
+                for futuro in as_completed(futuros):
+                    chave, dados_antigos = futuros[futuro]
+                    numero = chave[1]
+                    try:
+                        detalhe = futuro.result()
+                    except Exception as e:
+                        print(f"  ⚠️ [{cliente}] Erro ao atualizar solicitação {numero}: {e}")
+                        continue
+
+                    nova_situacao = detalhe.get("situacao_atual", "")
+                    if not nova_situacao or nova_situacao == dados_antigos["situacao"]:
+                        continue
+
+                    alerta_enviado = dados_antigos["alerta_enviado"]
+                    if nova_situacao.lower() == "finalizada" and alerta_enviado != "SIM":
+                        if enviar_alerta_email(cliente, numero, ""):
                             alerta_enviado = "SIM"
                         alertas += 1
-                    linha_valores = [
-                        cliente.upper(), login_user, uc_codigo, numero, tipo,
-                        detalhe.get("descricao", ""), data_solicitacao, situacao,
-                        detalhe.get("prazo", ""), detalhe.get("ultima_atualizacao", "") or agora,
-                        alerta_enviado, agora, "", detalhe.get("resultado", ""),
-                    ]
-                    novas_linhas_buffer.append(linha_valores)
-                    index[chave] = {"linha": proxima_linha, "situacao": situacao, "alerta_enviado": alerta_enviado}
-                    proxima_linha += 1
-                    novos += 1
 
-                elif registro["situacao"] != situacao:
-                    detalhe = buscar_detalhe_solicitacao(login_user, uc_codigo, numero, protocolo, token_ne_se)
-                    alerta_enviado = registro["alerta_enviado"]
-                    if situacao.lower() == "finalizada" and alerta_enviado != "SIM":
-                        if enviar_alerta_email(cliente, numero, tipo, uc_codigo):
-                            alerta_enviado = "SIM"
-                        alertas += 1
                     atualizacoes_buffer.append((
-                        registro["linha"],
+                        dados_antigos["linha"],
                         detalhe.get("descricao", ""),
-                        [situacao, detalhe.get("prazo", ""), detalhe.get("ultima_atualizacao", "") or agora, alerta_enviado],
+                        [nova_situacao, detalhe.get("prazo", ""), detalhe.get("ultima_atualizacao", "") or agora, alerta_enviado],
                         detalhe.get("resultado", ""),
+                        detalhe.get("historico", ""),
+                        detalhe.get("endereco", ""),
                     ))
-                    index[chave]["situacao"] = situacao
+                    index[chave]["situacao"] = nova_situacao
                     index[chave]["alerta_enviado"] = alerta_enviado
                     atualizados += 1
 
         if novas_linhas_buffer:
-            aba.append_rows(novas_linhas_buffer, value_input_option="USER_ENTERED")
+            # Solicitações de nível conta podem já ter sido descobertas numa
+            # execução concorrente/anterior — relê a planilha (estado real, não
+            # o índice carregado no início da função) antes de gravar.
+            chaves_existentes = {
+                (linha[0].strip(), linha[3].strip())
+                for linha in aba.get_all_values()[1:]
+                if len(linha) > 3
+            }
+            antes = len(novas_linhas_buffer)
+            novas_linhas_buffer = [
+                linha for linha in novas_linhas_buffer
+                if (linha[0], linha[3]) not in chaves_existentes
+            ]
+            evitadas = antes - len(novas_linhas_buffer)
+            if evitadas:
+                print(f"  ⚠️ [{cliente}] {evitadas} duplicata(s) evitada(s) na checagem final.")
+                novos -= evitadas
+            if novas_linhas_buffer:
+                linha_inicio_novas = total_linhas + 1
+                # table_range="A1" força o Sheets a procurar o fim da tabela a
+                # partir do topo, em vez de confiar na autodetecção (já vimos
+                # ela se confundir com validação de dados em células vazias e
+                # inserir linhas novas centenas de linhas abaixo do esperado).
+                aba.append_rows(novas_linhas_buffer, value_input_option="USER_ENTERED", table_range="A1")
+                # Checkbox/dropdown só nas linhas que acabaram de ser escritas
+                # (nunca adiantado — foi aplicar isso em massa, antes dos dados
+                # existirem, que causou o bug da "tabela fantasma").
+                aplicar_validacao_controle(aba, linha_inicio_novas, linha_inicio_novas + len(novas_linhas_buffer) - 1)
         if atualizacoes_buffer:
             updates = []
-            for linha, descricao, valores_hk, resultado in atualizacoes_buffer:
+            for linha, descricao, valores_hk, resultado, historico, endereco in atualizacoes_buffer:
                 if descricao:
                     updates.append({"range": f"F{linha}", "values": [[descricao]]})
                 updates.append({"range": f"H{linha}:K{linha}", "values": [valores_hk]})
                 if resultado:
                     updates.append({"range": f"N{linha}", "values": [[resultado]]})
+                if historico:
+                    updates.append({"range": f"O{linha}", "values": [[historico]]})
+                if endereco:
+                    updates.append({"range": f"P{linha}", "values": [[endereco]]})
             aba.batch_update(updates, value_input_option="USER_ENTERED")
 
         return True, novos, atualizados, alertas
