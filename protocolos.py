@@ -46,6 +46,20 @@ ABA_PROTOCOLOS = "Protocolos"
 # so a UC usada na chamada, nao necessariamente a UC "dona" da solicitacao.
 # O campo confiavel pra identificar o imovel e o Endereco (coluna P).
 
+# Colunas Q..V (0-indexed 16..21), editadas manualmente pela equipe nas abas
+# por cliente. O robo le essas colunas ANTES de sobrescrever a aba do cliente,
+# pra nao perder edicao.
+COLUNAS_MANUAIS_INDICE = {"instancia": 16, "protocolo_origem": 17, "resolvido": 18, "situacao_interna": 19, "observacoes_internas": 20}
+
+COR_HEADER = {"red": 0.043, "green": 0.42, "blue": 0.278}  # #0B6B47
+COR_BANDA_PAR = {"red": 0.933, "green": 0.965, "blue": 0.945}
+COR_BORDA = {"color": {"red": 0.85, "green": 0.85, "blue": 0.85}, "style": "SOLID"}
+LARGURAS_COLUNAS = {
+    0: 110, 1: 120, 2: 110, 3: 130, 4: 150, 5: 170, 6: 100, 7: 110, 8: 100,
+    9: 130, 10: 100, 11: 130, 12: 160, 13: 260, 14: 280, 15: 260, 16: 80,
+    17: 140, 18: 90, 19: 170, 20: 260, 21: 100,
+}
+
 
 # --- APIs da Agência Virtual (mesmo backend usado pelo extrator.py pra faturas) ---
 
@@ -226,6 +240,144 @@ def aplicar_validacao_controle(aba, linha_inicio, linha_fim):
         print(f"  ⚠️ Não consegui aplicar validação de controle nas linhas {linha_inicio}-{linha_fim}: {e}")
 
 
+def _estilizar_aba(aba, total_linhas, congelar_colunas=4):
+    """Aplica o mesmo visual da aba 'Protocolos' (cabeçalho verde, zebra,
+    bordas, larguras, filtro nativo) numa aba qualquer. 'total_linhas' deve
+    ser a quantidade real de linhas com dado (nunca mais que isso, pelo
+    mesmo motivo do aplicar_validacao_controle)."""
+    try:
+        client = autenticar_google_sheets()
+        planilha = client.open_by_key(PROTOCOLOS_SPREADSHEET_ID)
+        sheet_id = aba.id
+        fim = max(total_linhas, 2)
+
+        requests_batch = []
+        # Remove zebra já existente (reaplicar sem remover dá erro "already
+        # has alternating background colors" — isso roda de novo a cada
+        # regeneração da aba, então precisa ser idempotente).
+        meta = planilha.fetch_sheet_metadata()
+        for sheet in meta.get("sheets", []):
+            if sheet.get("properties", {}).get("sheetId") == sheet_id:
+                for banda in sheet.get("bandedRanges", []):
+                    requests_batch.append({"deleteBanding": {"bandedRangeId": banda["bandedRangeId"]}})
+                break
+
+        requests_batch += [
+            {"updateSheetProperties": {
+                "properties": {"sheetId": sheet_id, "gridProperties": {"frozenRowCount": 1, "frozenColumnCount": congelar_colunas}},
+                "fields": "gridProperties.frozenRowCount,gridProperties.frozenColumnCount",
+            }},
+            {"repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 22},
+                "cell": {"userEnteredFormat": {
+                    "backgroundColor": COR_HEADER,
+                    "textFormat": {"bold": True, "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
+                    "verticalAlignment": "MIDDLE",
+                }},
+                "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)",
+            }},
+            {"updateDimensionProperties": {
+                "range": {"sheetId": sheet_id, "dimension": "ROWS", "startIndex": 0, "endIndex": 1},
+                "properties": {"pixelSize": 32}, "fields": "pixelSize",
+            }},
+            {"addBanding": {"bandedRange": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": fim, "startColumnIndex": 0, "endColumnIndex": 22},
+                "rowProperties": {"headerColor": COR_HEADER, "firstBandColor": {"red": 1, "green": 1, "blue": 1}, "secondBandColor": COR_BANDA_PAR},
+            }}},
+            {"setBasicFilter": {"filter": {"range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": fim, "startColumnIndex": 0, "endColumnIndex": 22}}}},
+            {"updateBorders": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": fim, "startColumnIndex": 0, "endColumnIndex": 22},
+                "top": COR_BORDA, "bottom": COR_BORDA, "left": COR_BORDA, "right": COR_BORDA,
+                "innerHorizontal": COR_BORDA, "innerVertical": COR_BORDA,
+            }},
+        ]
+        for idx, largura in LARGURAS_COLUNAS.items():
+            requests_batch.append({"updateDimensionProperties": {
+                "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": idx, "endIndex": idx + 1},
+                "properties": {"pixelSize": largura}, "fields": "pixelSize",
+            }})
+        planilha.batch_update({"requests": requests_batch})
+    except Exception as e:
+        print(f"  ⚠️ Não consegui estilizar a aba '{aba.title}': {e}")
+
+
+def obter_ou_criar_aba_cliente(planilha, cliente, cabecalho):
+    nome = cliente.upper()
+    for ws in planilha.worksheets():
+        if ws.title == nome:
+            return ws
+    aba_nova = planilha.add_worksheet(title=nome, rows=200, cols=len(cabecalho))
+    aba_nova.update(range_name="A1", values=[cabecalho], value_input_option="RAW")
+    return aba_nova
+
+
+def sincronizar_edicoes_do_cliente(aba_protocolos, planilha, cliente):
+    """Lê a aba do cliente (se existir) e aplica na aba 'Protocolos' qualquer
+    edição manual feita lá (Instancia, Protocolo origem, Resolvido, Situacao
+    interna, Observacoes internas) — ANTES de regenerar a aba do cliente, pra
+    não perder o que a equipe editou desde a última rodada."""
+    nome = cliente.upper()
+    aba_cliente = None
+    for ws in planilha.worksheets():
+        if ws.title == nome:
+            aba_cliente = ws
+            break
+    if aba_cliente is None:
+        return
+
+    valores_cliente = aba_cliente.get_all_values()
+    if len(valores_cliente) < 2:
+        return
+
+    valores_protocolos = aba_protocolos.get_all_values()
+    linha_por_numero = {
+        linha[3].strip(): i + 1
+        for i, linha in enumerate(valores_protocolos)
+        if i > 0 and len(linha) > 3 and linha[0].strip() == nome and linha[3].strip()
+    }
+
+    updates = []
+    for linha in valores_cliente[1:]:
+        if len(linha) <= COLUNAS_MANUAIS_INDICE["observacoes_internas"]:
+            continue
+        numero = linha[3].strip() if len(linha) > 3 else ""
+        linha_protocolos = linha_por_numero.get(numero)
+        if not linha_protocolos:
+            continue
+        valores_manuais = [linha[idx] for idx in range(16, 21)]  # Q..U
+        atual = valores_protocolos[linha_protocolos - 1]
+        atual_manuais = [atual[idx] if len(atual) > idx else "" for idx in range(16, 21)]
+        if valores_manuais != atual_manuais:
+            updates.append({"range": f"Q{linha_protocolos}:U{linha_protocolos}", "values": [valores_manuais]})
+
+    if updates:
+        aba_protocolos.batch_update(updates, value_input_option="USER_ENTERED")
+        print(f"  [{cliente}] {len(updates)} edição(ões) manual(is) sincronizada(s) da aba do cliente.")
+
+
+def regenerar_aba_cliente(aba_protocolos, planilha, cliente):
+    """Reescreve a aba do cliente do zero com o estado atual (pós-sincronização
+    e pós-atualização) da aba 'Protocolos', filtrado pra esse cliente."""
+    nome = cliente.upper()
+    valores = aba_protocolos.get_all_values()
+    if not valores:
+        return
+    cabecalho = valores[0]
+    linhas_cliente = [linha for linha in valores[1:] if linha and linha[0].strip() == nome]
+
+    aba_cliente = obter_ou_criar_aba_cliente(planilha, cliente, cabecalho)
+    total_linhas_atuais = len(aba_cliente.get_all_values())
+    if total_linhas_atuais > 1:
+        aba_cliente.batch_clear([f"A2:V{total_linhas_atuais}"])
+    aba_cliente.update(range_name="A1", values=[cabecalho], value_input_option="RAW")
+    if linhas_cliente:
+        aba_cliente.update(range_name="A2", values=linhas_cliente, value_input_option="USER_ENTERED")
+
+    _estilizar_aba(aba_cliente, len(linhas_cliente) + 1)
+    if linhas_cliente:
+        aplicar_validacao_controle(aba_cliente, 2, len(linhas_cliente) + 1)
+
+
 def carregar_index_protocolos(aba):
     """Retorna { (cliente, numero): {'linha': int, 'situacao': str, 'alerta_enviado': str} }"""
     valores = aba.get_all_values()
@@ -321,6 +473,13 @@ def enviar_alerta_email(cliente, numero_solicitacao, tipo):
 
 def processar_protocolos_cliente(cliente, login_user, login_password):
     aba = _abrir_aba_protocolos()
+    client_sheets = autenticar_google_sheets()
+    planilha = client_sheets.open_by_key(PROTOCOLOS_SPREADSHEET_ID)
+
+    # Antes de mexer em qualquer coisa: traz pra "Protocolos" o que a equipe
+    # editou manualmente na aba desse cliente desde a última rodada.
+    sincronizar_edicoes_do_cliente(aba, planilha, cliente)
+
     index, total_linhas = carregar_index_protocolos(aba)
     proxima_linha = total_linhas + 1
 
@@ -516,6 +675,7 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
                     updates.append({"range": f"P{linha}", "values": [[endereco]]})
             aba.batch_update(updates, value_input_option="USER_ENTERED")
 
+        regenerar_aba_cliente(aba, planilha, cliente)
         return True, novos, atualizados, alertas
 
     except Exception as e:
