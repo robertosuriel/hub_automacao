@@ -3,7 +3,7 @@ import sys
 import time
 import json
 import shutil
-import platform
+import socket
 import base64
 import requests
 import pandas as pd
@@ -40,12 +40,52 @@ load_dotenv(env_path)
 
 credentials_path = os.path.join(base_path, "credentials.json")
 df_lock = Lock()
+chrome_lock = Lock()
 
 SPREADSHEET_ID = "1Ut5Y0LstIP7nhv7Jzyywc7SS7ObIPlO-3yEg-J8Pp5o"
 PASTA_DRIVE_ID = "1wbPLpNj_h1i3nLCEhVx2vdYyDiIval-9"
 EXPORT_COLUMNS = ["codigo_cliente", "mesReferencia", "numeroFatura", "emissão", "vencimento", "valor", "situação"]
 
 # --- FUNÇÕES AUXILIARES ---
+
+_getaddrinfo_original = socket.getaddrinfo
+_doh_cache = {}
+
+def _resolver_via_doh(host):
+    """Descobre o IP por DNS sobre HTTPS quando o DNS do servidor falha para o host."""
+    if host in _doh_cache:
+        return _doh_cache[host]
+    ips = []
+    for url in ("https://1.1.1.1/dns-query", "https://8.8.8.8/resolve"):
+        try:
+            r = requests.get(url, params={"name": host, "type": "A"}, headers={"accept": "application/dns-json"}, timeout=10)
+            ips = [a["data"] for a in r.json().get("Answer", []) if a.get("type") == 1]
+            if ips:
+                print(f"  [DNS] {host} -> {ips[0]} (via {url.split('/')[2]})")
+                break
+            print(f"  [DNS] {url.split('/')[2]} sem resposta A para {host}")
+        except Exception as e:
+            print(f"  [DNS] DoH {url.split('/')[2]} falhou: {type(e).__name__}")
+    _doh_cache[host] = ips
+    return ips
+
+def _getaddrinfo_com_fallback(host, *args, **kwargs):
+    try:
+        return _getaddrinfo_original(host, *args, **kwargs)
+    except socket.gaierror:
+        if isinstance(host, str) and host.endswith("neoenergia.com"):
+            ips = _resolver_via_doh(host)
+            if ips:
+                return _getaddrinfo_original(ips[0], *args, **kwargs)
+        raise
+
+socket.getaddrinfo = _getaddrinfo_com_fallback
+
+def _causa_raiz(e):
+    while (e.__cause__ or e.__context__) is not None:
+        e = e.__cause__ or e.__context__
+    return f"{type(e).__name__}: {str(e)[:140]}"
+
 
 def autenticar_google_sheets():
     scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
@@ -57,30 +97,45 @@ def autenticar_drive():
     creds = service_account.Credentials.from_service_account_file(credentials_path, scopes=SCOPES)
     return build("drive", "v3", credentials=creds)
 
+def diagnosticar_chrome():
+    """Imprime no log por que o Chrome fecha ao iniciar (libs faltando, erro de execução)."""
+    import subprocess
+    from selenium.webdriver.common.selenium_manager import SeleniumManager
+    try:
+        paths = SeleniumManager().binary_paths(["--browser", "chrome"])
+        browser = paths.get("browser_path")
+        print(f"  [DIAG] chrome={browser} driver={paths.get('driver_path')}")
+        if not browser:
+            return
+        ldd = subprocess.run(["ldd", browser], capture_output=True, text=True, timeout=30)
+        faltando = [l.strip() for l in ldd.stdout.splitlines() if "not found" in l]
+        print(f"  [DIAG] libs faltando: {faltando or 'nenhuma'}")
+        run = subprocess.run([browser, "--headless=new", "--no-sandbox", "--disable-gpu", "--dump-dom", "about:blank"],
+                             capture_output=True, text=True, timeout=60)
+        print(f"  [DIAG] chrome exit={run.returncode} stderr={run.stderr.strip()[-1500:]}")
+    except Exception as e:
+        print(f"  [DIAG] falha no diagnóstico: {e}")
+
 def configurar_driver():
     chrome_options = Options()
-    # Headless sem sufixo =new para compatibilidade com versões antigas do Chromium
-    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--window-size=1920,1080")
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36")
     chrome_options.add_argument("--log-level=3")
+
+    # Flags para container Linux. --single-process e --no-zygote derrubam o Chrome atual ao iniciar.
     chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--disable-extensions")
 
-    # --no-zygote/--single-process travam o Chrome no Windows (dev local);
-    # só fazem sentido no container Linux do Streamlit Cloud.
-    if platform.system() == "Linux":
-        chrome_options.add_argument("--disable-setuid-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--no-zygote")
-        chrome_options.add_argument("--single-process")
-        chrome_options.add_argument("--disable-software-rasterizer")
-
-    # Selenium Manager (Selenium 4.6+) baixa automaticamente o Chrome for Testing
-    # + ChromeDriver compativel, sem depender de pacotes do sistema operacional
-    return webdriver.Chrome(options=chrome_options)
+    # Selenium Manager baixa o Chrome for Testing + ChromeDriver compativel
+    try:
+        return webdriver.Chrome(options=chrome_options)
+    except Exception:
+        diagnosticar_chrome()
+        raise
 
 def realizar_login_selenium_original(driver, login_user, login_password, cliente):
     try:
@@ -298,6 +353,20 @@ def preparar_dados_para_exportacao(df):
     
     return df
 
+def get_com_retentativa(url, rotulo, tentativas=4, espera=5, **kwargs):
+    """GET que repete em erro de rede (DNS/timeout) e em 401/403/429/5xx; devolve a Response ou None."""
+    for n in range(1, tentativas + 1):
+        try:
+            r = requests.get(url, **kwargs)
+            if r.status_code == 200 or not (r.status_code in (401, 403, 429) or r.status_code >= 500):
+                return r
+            print(f"  ⚠️ {rotulo}: HTTP {r.status_code} (tentativa {n}/{tentativas})")
+        except Exception as e:
+            print(f"  ⚠️ {rotulo}: {_causa_raiz(e)} (tentativa {n}/{tentativas})")
+        if n < tentativas:
+            time.sleep(espera)
+    return None
+
 def processar_cliente(cliente, login_user, login_password, worksheet):
     MAX_TENTATIVAS_LOGIN = 3
     tentativa_atual = 1
@@ -307,54 +376,67 @@ def processar_cliente(cliente, login_user, login_password, worksheet):
     for img in [f"erro_sem_token_{cliente}.png", f"erro_botao_{cliente}.png", f"erro_fatal_{cliente}.png"]:
         if os.path.exists(img): os.remove(img)
 
-    while tentativa_atual <= MAX_TENTATIVAS_LOGIN:
-        print(f"  [{cliente.upper()}] Tentativa {tentativa_atual}/{MAX_TENTATIVAS_LOGIN}...")
-        driver = configurar_driver()
-        try:
-            driver.get("https://agenciavirtual.neoenergia.com/#/login")
-            time.sleep(4) 
-            WebDriverWait(driver, 30).until(lambda d: d.execute_script("return document.readyState") == "complete")
+    with chrome_lock:
+        while tentativa_atual <= MAX_TENTATIVAS_LOGIN:
+            print(f"  [{cliente.upper()}] Tentativa {tentativa_atual}/{MAX_TENTATIVAS_LOGIN}...")
+            driver = configurar_driver()
+            try:
+                driver.get("https://agenciavirtual.neoenergia.com/#/login")
+                time.sleep(4) 
+                WebDriverWait(driver, 30).until(lambda d: d.execute_script("return document.readyState") == "complete")
             
-            bearer_token = realizar_login_selenium_original(driver, login_user, login_password, cliente)
+                bearer_token = realizar_login_selenium_original(driver, login_user, login_password, cliente)
             
-            if bearer_token:
-                tokenNeSe = bearer_token.split(":")[1].split(",")[0].strip(' "{}')
-                print("  ✅ Login realizado!")
-                driver.quit()
-                break
-            else:
-                print("  ⚠️ Token não obtido.")
-        except Exception as e:
-             print(f"  ⚠️ Erro na tentativa: {e}")
+                if bearer_token:
+                    tokenNeSe = bearer_token.split(":")[1].split(",")[0].strip(' "{}')
+                    print("  ✅ Login realizado!")
+                    driver.quit()
+                    break
+                else:
+                    print("  ⚠️ Token não obtido.")
+            except Exception as e:
+                 print(f"  ⚠️ Erro na tentativa: {e}")
              
-        driver.quit()
-        tentativa_atual += 1
-        if tentativa_atual <= MAX_TENTATIVAS_LOGIN:
-             time.sleep(5)
+            driver.quit()
+            tentativa_atual += 1
+            if tentativa_atual <= MAX_TENTATIVAS_LOGIN:
+                 time.sleep(5)
 
     if not tokenNeSe:
         print(f"❌ Falha no login de {cliente}.")
         return False
 
+    time.sleep(5)
     print("  Obtendo dados de UCs e Faturas...")
     headers_api = {"User-Agent": "Mozilla/5.0", "Authorization": "Bearer " + tokenNeSe}
     
+    r_ucs = get_com_retentativa(
+        f"https://apineprd.neoenergia.com/imoveis/1.1.0/clientes/{login_user}/ucs", f"[{cliente.upper()}] Lista de UCs",
+        params={"documento": login_user, "canalSolicitante": "AGC", "distribuidora": "COELBA", "usuario": "WSO2_CONEXAO", "indMaisUcs": "X", "tipoPerfil": "1"},
+        headers=headers_api, timeout=30)
+    if r_ucs is None or r_ucs.status_code != 200:
+        motivo = "sem resposta" if r_ucs is None else f"HTTP {r_ucs.status_code} - {r_ucs.text[:200]}"
+        print(f"  ❌ [{cliente.upper()}] Não foi possível obter a lista de UCs: {motivo}")
+        return False
     try:
-        r_ucs = requests.get(f"https://apineprd.neoenergia.com/imoveis/1.1.0/clientes/{login_user}/ucs", 
-                             params={"documento": login_user, "canalSolicitante": "AGC", "distribuidora": "COELBA", "usuario": "WSO2_CONEXAO", "indMaisUcs": "X", "tipoPerfil": "1"}, 
-                             headers=headers_api, timeout=30)
         codigos_uc = [uc['uc'] for uc in r_ucs.json().get("ucs", [])]
-    except:
+    except Exception as e:
+        print(f"  ❌ [{cliente.upper()}] Resposta inválida na lista de UCs: {type(e).__name__}: {e}")
         return False
 
-    if not codigos_uc: return False
+    if not codigos_uc:
+        print(f"  ❌ [{cliente.upper()}] A API não retornou nenhuma UC para este login.")
+        return False
 
+    r_proto = get_com_retentativa(
+        "https://apineprd.neoenergia.com/protocolo/1.1.0/obterProtocolo", f"[{cliente.upper()}] Protocolo",
+        params={"distribuidora": "COEL", "canalSolicitante": "AGC", "documento": login_user, "codCliente": codigos_uc[0], "recaptchaAnl": "true", "regiao": "NE"},
+        headers=headers_api, timeout=30)
     try:
-        r_proto = requests.get("https://apineprd.neoenergia.com/protocolo/1.1.0/obterProtocolo",
-                               params={"distribuidora": "COEL", "canalSolicitante": "AGC", "documento": login_user, "codCliente": codigos_uc[0], "recaptchaAnl": "true", "regiao": "NE"},
-                               headers=headers_api, timeout=30)
         protocolo = r_proto.json().get('protocoloLegado')
-    except: protocolo = None
+    except Exception as e:
+        print(f"  ⚠️ [{cliente.upper()}] Protocolo não obtido ({type(e).__name__}); seguindo sem protocolo.")
+        protocolo = None
 
     dados_coletados = []
     ucs_com_falha = []

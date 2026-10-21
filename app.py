@@ -97,6 +97,10 @@ class StreamlitRedirect:
     def write(self, string):
         if not string: return
         self.text += string
+        try:
+            sys.__stdout__.write(string)
+        except Exception:
+            pass
         linhas = self.text.split('\n')[-15:]
         try:
             if self.ctx:
@@ -108,7 +112,7 @@ class StreamlitRedirect:
     def flush(self):
         pass
 
-clientes_disponiveis = ['blue', 'criatech', 'soft', 'softcomp', 'DNA', 'NCA', 'GM']
+clientes_disponiveis = ['blue', 'criatech', 'soft', 'softcomp', 'DNA', 'NCA', 'GM', 'RM', 'PRIMO']
 
 # --- BARRA LATERAL (MENU) ---
 try:
@@ -166,7 +170,8 @@ if "Extrair Faturas" in modulo_selecionado:
             
             resultados = {}
             old_stdout = sys.stdout
-            sys.stdout = StreamlitRedirect(caixa_log)
+            log_redirect = StreamlitRedirect(caixa_log)
+            sys.stdout = log_redirect
             
             try:
                 for i, cliente in enumerate(clientes_selecionados):
@@ -183,7 +188,9 @@ if "Extrair Faturas" in modulo_selecionado:
                             "softcomp": "Controle_SoftComp_Automação",
                             "DNA": "Controle_DNA_Automação",
                             "NCA": "Controle_NCA_Automação",
-                            "GM": "Controle_GM_Automação"
+                            "GM": "Controle_GM_Automação",
+                            "RM": "Controle_RM_Automação",
+                            "PRIMO": "Controle_PRIMO_Automação"
                         }
                         worksheet = MAPA_ABAS.get(cliente)
                         
@@ -209,6 +216,8 @@ if "Extrair Faturas" in modulo_selecionado:
                 sys.stdout = old_stdout
                 
             texto_status.success("🎉 Extração da Coelba concluída!")
+            with st.expander("📜 Log completo da execução"):
+                st.code(log_redirect.text, language="bash")
             
             st.divider()
             st.subheader("📊 Relatório de Execução - Extração")
@@ -263,7 +272,8 @@ elif "Gerar PDFs 'PAGO'" in modulo_selecionado:
             caixa_log = st.empty()
             
             old_stdout = sys.stdout
-            sys.stdout = StreamlitRedirect(caixa_log)
+            log_redirect = StreamlitRedirect(caixa_log)
+            sys.stdout = log_redirect
             
             try:
                 with st.spinner("Lendo planilhas e aplicando marcas d'água... isso pode levar alguns minutos."):
@@ -275,7 +285,9 @@ elif "Gerar PDFs 'PAGO'" in modulo_selecionado:
                         "softcomp": "Controle_SoftComp_Automação",
                         "DNA": "Controle_DNA_Automação",
                         "NCA": "Controle_NCA_Automação",
-                        "GM": "Controle_GM_Automação"
+                        "GM": "Controle_GM_Automação",
+                        "RM": "Controle_RM_Automação",
+                        "PRIMO": "Controle_PRIMO_Automação"
                     }
                     
                     clientes_com_aba = {}
@@ -287,6 +299,8 @@ elif "Gerar PDFs 'PAGO'" in modulo_selecionado:
                 sys.stdout = old_stdout
             
             texto_status.success("🎉 Processamento de Pagos concluído!")
+            with st.expander("📜 Log completo da execução"):
+                st.code(log_redirect.text, language="bash")
             
             st.divider()
             st.subheader("📊 Relatório de Execução - PDFs Pagos")
