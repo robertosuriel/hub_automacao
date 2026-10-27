@@ -35,10 +35,12 @@ credentials_path = os.path.join(base_path, "credentials.json")
 PROTOCOLOS_SPREADSHEET_ID = "1_tGDCBzQ_7Swwf4XKfWsU1mv0XHNRlB3jEZYpLaN-yk"
 ABA_PROTOCOLOS = "Protocolos"
 
-# Colunas da aba "Protocolos" (nessa ordem, A..P):
+# Colunas da aba "Protocolos" (nessa ordem, A..W):
 # Cliente | CNPJ | UC (referencia) | No da Solicitacao | Tipo | Descricao |
 # Data da Solicitacao | Situacao | Prazo | Ultima Atualizacao | Alerta Enviado |
-# Descoberto em | Observacoes | Resultado | Historico | Endereco
+# Descoberto em | Observacoes | Resultado | Historico | Endereco |
+# Instancia | Protocolo origem | Resolvido | Situacao interna | Observacoes internas |
+# Dias p/ prazo | Historico Prazo
 #
 # IMPORTANTE sobre a coluna "UC (referencia)": o pedidos-header NAO e por UC
 # (confirmado: a mesma lista de ate 30 solicitacoes recentes volta
@@ -49,7 +51,10 @@ ABA_PROTOCOLOS = "Protocolos"
 # Colunas Q..V (0-indexed 16..21), editadas manualmente pela equipe nas abas
 # por cliente. O robo le essas colunas ANTES de sobrescrever a aba do cliente,
 # pra nao perder edicao.
+# Coluna W (0-indexed 22): Historico Prazo — preenchida automaticamente pelo robo
+# quando o prazo muda (formato: "[data] Prazo: antigo → novo").
 COLUNAS_MANUAIS_INDICE = {"instancia": 16, "protocolo_origem": 17, "resolvido": 18, "situacao_interna": 19, "observacoes_internas": 20}
+COLUNA_HISTORICO_PRAZO = 22  # W
 
 COR_HEADER = {"red": 0.043, "green": 0.42, "blue": 0.278}  # #0B6B47
 COR_BANDA_PAR = {"red": 0.933, "green": 0.965, "blue": 0.945}
@@ -57,8 +62,9 @@ COR_BORDA = {"color": {"red": 0.85, "green": 0.85, "blue": 0.85}, "style": "SOLI
 LARGURAS_COLUNAS = {
     0: 110, 1: 120, 2: 110, 3: 130, 4: 150, 5: 170, 6: 100, 7: 110, 8: 100,
     9: 130, 10: 100, 11: 130, 12: 160, 13: 260, 14: 280, 15: 260, 16: 80,
-    17: 140, 18: 90, 19: 170, 20: 260, 21: 100,
+    17: 140, 18: 90, 19: 170, 20: 260, 21: 100, 22: 280,
 }
+TOTAL_COLUNAS = 23  # A..W
 
 
 # --- APIs da Agência Virtual (mesmo backend usado pelo extrator.py pra faturas) ---
@@ -268,7 +274,7 @@ def _estilizar_aba(aba, total_linhas, congelar_colunas=4):
                 "fields": "gridProperties.frozenRowCount,gridProperties.frozenColumnCount",
             }},
             {"repeatCell": {
-                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": 22},
+                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": TOTAL_COLUNAS},
                 "cell": {"userEnteredFormat": {
                     "backgroundColor": COR_HEADER,
                     "textFormat": {"bold": True, "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
@@ -281,12 +287,12 @@ def _estilizar_aba(aba, total_linhas, congelar_colunas=4):
                 "properties": {"pixelSize": 32}, "fields": "pixelSize",
             }},
             {"addBanding": {"bandedRange": {
-                "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": fim, "startColumnIndex": 0, "endColumnIndex": 22},
+                "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": fim, "startColumnIndex": 0, "endColumnIndex": TOTAL_COLUNAS},
                 "rowProperties": {"headerColor": COR_HEADER, "firstBandColor": {"red": 1, "green": 1, "blue": 1}, "secondBandColor": COR_BANDA_PAR},
             }}},
-            {"setBasicFilter": {"filter": {"range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": fim, "startColumnIndex": 0, "endColumnIndex": 22}}}},
+            {"setBasicFilter": {"filter": {"range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": fim, "startColumnIndex": 0, "endColumnIndex": TOTAL_COLUNAS}}}},
             {"updateBorders": {
-                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": fim, "startColumnIndex": 0, "endColumnIndex": 22},
+                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": fim, "startColumnIndex": 0, "endColumnIndex": TOTAL_COLUNAS},
                 "top": COR_BORDA, "bottom": COR_BORDA, "left": COR_BORDA, "right": COR_BORDA,
                 "innerHorizontal": COR_BORDA, "innerVertical": COR_BORDA,
             }},
@@ -368,7 +374,7 @@ def regenerar_aba_cliente(aba_protocolos, planilha, cliente):
     aba_cliente = obter_ou_criar_aba_cliente(planilha, cliente, cabecalho)
     total_linhas_atuais = len(aba_cliente.get_all_values())
     if total_linhas_atuais > 1:
-        aba_cliente.batch_clear([f"A2:V{total_linhas_atuais}"])
+        aba_cliente.batch_clear([f"A2:W{total_linhas_atuais}"])
     aba_cliente.update(range_name="A1", values=[cabecalho], value_input_option="RAW")
     if linhas_cliente:
         aba_cliente.update(range_name="A2", values=linhas_cliente, value_input_option="USER_ENTERED")
@@ -379,7 +385,8 @@ def regenerar_aba_cliente(aba_protocolos, planilha, cliente):
 
 
 def carregar_index_protocolos(aba):
-    """Retorna { (cliente, numero): {'linha': int, 'situacao': str, 'alerta_enviado': str} }"""
+    """Retorna { (cliente, numero): {'linha': int, 'situacao': str, 'alerta_enviado': str,
+    'prazo': str, 'ultima_atualizacao': str, 'historico_prazo': str} }"""
     valores = aba.get_all_values()
     index = {}
     for i, linha in enumerate(valores):
@@ -394,7 +401,10 @@ def carregar_index_protocolos(aba):
         index[(cliente, numero)] = {
             "linha": i + 1,
             "situacao": linha[7].strip(),
+            "prazo": linha[8].strip() if len(linha) > 8 else "",
+            "ultima_atualizacao": linha[9].strip() if len(linha) > 9 else "",
             "alerta_enviado": linha[10].strip(),
+            "historico_prazo": linha[COLUNA_HISTORICO_PRAZO].strip() if len(linha) > COLUNA_HISTORICO_PRAZO else "",
         }
     return index, len(valores)
 
@@ -525,9 +535,12 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
             solicitacoes_recentes = []
 
         novas_linhas_buffer = []
-        atualizacoes_buffer = []  # (linha, descricao, [situacao, prazo, ultima_atualizacao, alerta_enviado], resultado, historico, endereco)
+        atualizacoes_buffer = []  # (linha, descricao, [situacao, prazo, ultima_atualizacao, alerta_enviado], resultado, historico, endereco, historico_prazo)
         agora = datetime.now().strftime("%d/%m/%Y %H:%M")
         vistos_nesta_rodada = set()
+        # Protocolos abertos na lista recente que não mudaram de status —
+        # serão checados via detalhe depois pra detectar mudança de prazo.
+        abertos_sem_mudanca_status = []
 
         for s in solicitacoes_recentes:
             numero = str(s.get("numSolicitacao", "")).strip()
@@ -560,8 +573,12 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
                     "1", "", "FALSE", "-", "",
                     f'=IF(OR(H{proxima_linha}="Finalizada",I{proxima_linha}=""),"",I{proxima_linha}-TODAY())',
                 ]
+                # Coluna W (Historico Prazo) — vazia pra solicitações novas
+                linha_valores.append("")
                 novas_linhas_buffer.append(linha_valores)
-                index[chave] = {"linha": proxima_linha, "situacao": situacao, "alerta_enviado": alerta_enviado}
+                index[chave] = {"linha": proxima_linha, "situacao": situacao, "alerta_enviado": alerta_enviado,
+                                "prazo": detalhe.get("prazo", ""), "ultima_atualizacao": detalhe.get("ultima_atualizacao", ""),
+                                "historico_prazo": ""}
                 proxima_linha += 1
                 novos += 1
 
@@ -572,34 +589,48 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
                     if enviar_alerta_email(cliente, numero, tipo):
                         alerta_enviado = "SIM"
                     alertas += 1
+                # Checa se o prazo também mudou junto com o status
+                novo_prazo = detalhe.get("prazo", "")
+                hist_prazo = registro.get("historico_prazo", "")
+                if novo_prazo and novo_prazo != registro.get("prazo", ""):
+                    log_prazo = f"[{agora}] Prazo alterado: {registro.get('prazo', '?')} → {novo_prazo}"
+                    hist_prazo = f"{hist_prazo}\n{log_prazo}".strip() if hist_prazo else log_prazo
                 atualizacoes_buffer.append((
                     registro["linha"],
                     detalhe.get("descricao", ""),
-                    [situacao, detalhe.get("prazo", ""), detalhe.get("ultima_atualizacao", "") or agora, alerta_enviado],
+                    [situacao, novo_prazo, detalhe.get("ultima_atualizacao", "") or agora, alerta_enviado],
                     detalhe.get("resultado", ""),
                     detalhe.get("historico", ""),
                     detalhe.get("endereco", ""),
+                    hist_prazo,
                 ))
                 index[chave]["situacao"] = situacao
                 index[chave]["alerta_enviado"] = alerta_enviado
+                index[chave]["prazo"] = novo_prazo
+                index[chave]["historico_prazo"] = hist_prazo
                 atualizados += 1
 
-        # 2. Solicitações já conhecidas e ainda em aberto que não apareceram na
-        # lista acima podem ter saído da janela de ~30 itens mais recentes
-        # (empurradas por registros de "Contato"). Pra essas, consulta direto
-        # por número via pedidos-detalhe em vez de depender de reaparecerem.
+            elif situacao.strip().lower() != "finalizada":
+                # Status não mudou mas protocolo ainda aberto — guardar pra
+                # checar mudança de prazo/atualização via detalhe.
+                abertos_sem_mudanca_status.append((chave, registro))
+
+        # 2. Protocolos abertos que precisam checagem de detalhe:
+        #    a) os da lista recente cujo status não mudou (podem ter prazo novo)
+        #    b) os que saíram da janela de ~30 itens mais recentes
         abertas_fora_da_lista = [
             (chave, dados) for chave, dados in index.items()
             if chave[0] == cliente.upper()
             and dados["situacao"].strip().lower() != "finalizada"
             and chave[1] not in vistos_nesta_rodada
         ]
-        if abertas_fora_da_lista:
-            print(f"  [{cliente}] Checando {len(abertas_fora_da_lista)} solicitação(ões) aberta(s) fora da lista recente...")
+        todos_abertos_pra_checar = abertos_sem_mudanca_status + abertas_fora_da_lista
+        if todos_abertos_pra_checar:
+            print(f"  [{cliente}] Checando {len(todos_abertos_pra_checar)} solicitação(ões) aberta(s) por mudanças de prazo/status...")
             with ThreadPoolExecutor(max_workers=10) as executor:
                 futuros = {
                     executor.submit(buscar_detalhe_solicitacao, login_user, uc_referencia, chave[1], protocolo, token_ne_se): (chave, dados)
-                    for chave, dados in abertas_fora_da_lista
+                    for chave, dados in todos_abertos_pra_checar
                 }
                 for futuro in as_completed(futuros):
                     chave, dados_antigos = futuros[futuro]
@@ -611,25 +642,43 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
                         continue
 
                     nova_situacao = detalhe.get("situacao_atual", "")
-                    if not nova_situacao or nova_situacao == dados_antigos["situacao"]:
+                    novo_prazo = detalhe.get("prazo", "")
+                    nova_ult_atualizacao = detalhe.get("ultima_atualizacao", "")
+
+                    mudou_status = nova_situacao and nova_situacao != dados_antigos["situacao"]
+                    mudou_prazo = novo_prazo and novo_prazo != dados_antigos.get("prazo", "")
+                    mudou_atualizacao = nova_ult_atualizacao and nova_ult_atualizacao != dados_antigos.get("ultima_atualizacao", "")
+
+                    if not mudou_status and not mudou_prazo and not mudou_atualizacao:
                         continue
 
                     alerta_enviado = dados_antigos["alerta_enviado"]
-                    if nova_situacao.lower() == "finalizada" and alerta_enviado != "SIM":
+                    if nova_situacao and nova_situacao.lower() == "finalizada" and alerta_enviado != "SIM":
                         if enviar_alerta_email(cliente, numero, ""):
                             alerta_enviado = "SIM"
                         alertas += 1
 
+                    # Registra mudança de prazo na coluna W (Hist. Prazo)
+                    hist_prazo = dados_antigos.get("historico_prazo", "")
+                    if mudou_prazo:
+                        log_prazo = f"[{agora}] Prazo alterado: {dados_antigos.get('prazo', '?')} → {novo_prazo}"
+                        hist_prazo = f"{hist_prazo}\n{log_prazo}".strip() if hist_prazo else log_prazo
+                        print(f"  📅 [{cliente}] Solicitação {numero}: prazo alterado de {dados_antigos.get('prazo', '?')} para {novo_prazo}")
+
                     atualizacoes_buffer.append((
                         dados_antigos["linha"],
                         detalhe.get("descricao", ""),
-                        [nova_situacao, detalhe.get("prazo", ""), detalhe.get("ultima_atualizacao", "") or agora, alerta_enviado],
+                        [nova_situacao or dados_antigos["situacao"], novo_prazo, nova_ult_atualizacao or agora, alerta_enviado],
                         detalhe.get("resultado", ""),
                         detalhe.get("historico", ""),
                         detalhe.get("endereco", ""),
+                        hist_prazo,
                     ))
-                    index[chave]["situacao"] = nova_situacao
+                    if mudou_status:
+                        index[chave]["situacao"] = nova_situacao
                     index[chave]["alerta_enviado"] = alerta_enviado
+                    index[chave]["prazo"] = novo_prazo
+                    index[chave]["historico_prazo"] = hist_prazo
                     atualizados += 1
 
         if novas_linhas_buffer:
@@ -663,10 +712,14 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
                 aplicar_validacao_controle(aba, linha_inicio_novas, linha_inicio_novas + len(novas_linhas_buffer) - 1)
         if atualizacoes_buffer:
             updates = []
-            for linha, descricao, valores_hk, resultado, historico, endereco in atualizacoes_buffer:
+            for item in atualizacoes_buffer:
+                linha, descricao, valores_hk, resultado, historico, endereco = item[:6]
+                hist_prazo = item[6] if len(item) > 6 else ""
                 if descricao:
                     updates.append({"range": f"F{linha}", "values": [[descricao]]})
                 updates.append({"range": f"H{linha}:K{linha}", "values": [valores_hk]})
+                if hist_prazo:
+                    updates.append({"range": f"W{linha}", "values": [[hist_prazo]]})
                 if resultado:
                     updates.append({"range": f"N{linha}", "values": [[resultado]]})
                 if historico:
