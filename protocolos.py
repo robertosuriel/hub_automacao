@@ -644,6 +644,7 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
                     nova_situacao = detalhe.get("situacao_atual", "")
                     novo_prazo = detalhe.get("prazo", "")
                     nova_ult_atualizacao = detalhe.get("ultima_atualizacao", "")
+                    print(f"    🔍 [{cliente}] Sol {numero}: API prazo='{novo_prazo}' planilha prazo='{dados_antigos.get('prazo', '')}' | API ult_at='{nova_ult_atualizacao}' planilha ult_at='{dados_antigos.get('ultima_atualizacao', '')}' | API status='{nova_situacao}' planilha status='{dados_antigos['situacao']}'")
 
                     mudou_status = nova_situacao and nova_situacao != dados_antigos["situacao"]
                     mudou_prazo = novo_prazo and novo_prazo != dados_antigos.get("prazo", "")
