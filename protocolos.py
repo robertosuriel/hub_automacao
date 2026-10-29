@@ -67,6 +67,19 @@ LARGURAS_COLUNAS = {
 TOTAL_COLUNAS = 23  # A..W
 
 
+def formula_dias_prazo(linha):
+    """Fórmula da coluna V (Dias p/ prazo). A planilha tem locale en_US
+    (M/D/YYYY), mas gravamos Prazo como texto DD/MM/YYYY — se a gente deixar
+    o Sheets 'adivinhar' o formato, ele não reconhece como data e a subtração
+    direta (I-TODAY()) quebra com #VALUE!. Por isso parseia o texto na mão
+    (dia/mês/ano) em vez de depender do Sheets reconhecer a data sozinho —
+    funciona com qualquer locale."""
+    return (
+        f'=IF(OR(H{linha}="Finalizada",I{linha}="",I{linha}="00/00/0000"),"",'
+        f'IFERROR(DATE(VALUE(RIGHT(I{linha},4)),VALUE(MID(I{linha},4,2)),VALUE(LEFT(I{linha},2)))-TODAY(),""))'
+    )
+
+
 # --- APIs da Agência Virtual (mesmo backend usado pelo extrator.py pra faturas) ---
 
 def obter_ucs_cliente(login_user, token_ne_se):
@@ -571,7 +584,7 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
                     # Observacoes internas (controle manual) e Dias p/ prazo (formula,
                     # recalcula sozinha e já referencia a linha certa).
                     "1", "", "FALSE", "-", "",
-                    f'=IF(OR(H{proxima_linha}="Finalizada",I{proxima_linha}=""),"",I{proxima_linha}-TODAY())',
+                    formula_dias_prazo(proxima_linha),
                 ]
                 # Coluna W (Historico Prazo) — vazia pra solicitações novas
                 linha_valores.append("")
