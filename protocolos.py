@@ -67,6 +67,18 @@ LARGURAS_COLUNAS = {
 TOTAL_COLUNAS = 23  # A..W
 
 
+def normalizar_numero(numero):
+    """A API da Coelba às vezes devolve o mesmo número de solicitação com
+    zeros à esquerda (ex.: '004101702012' num dia, '4101702012' noutro) —
+    confirmado em produção, causava duplicata porque a chave de dedup não
+    batia. Números de 12 dígitos (700002.../300002...) nunca têm esse
+    problema por já estarem no tamanho máximo; só afeta os mais curtos.
+    Remove zeros à esquerda pra sempre comparar/gravar na mesma forma."""
+    numero = str(numero).strip()
+    sem_zeros = numero.lstrip("0")
+    return sem_zeros if sem_zeros else numero
+
+
 def formula_dias_prazo(linha):
     """Fórmula da coluna V (Dias p/ prazo). A planilha tem locale en_US
     (M/D/YYYY), mas gravamos Prazo como texto DD/MM/YYYY — se a gente deixar
@@ -350,7 +362,7 @@ def sincronizar_edicoes_do_cliente(aba_protocolos, planilha, cliente):
 
     valores_protocolos = aba_protocolos.get_all_values()
     linha_por_numero = {
-        linha[3].strip(): i + 1
+        normalizar_numero(linha[3]): i + 1
         for i, linha in enumerate(valores_protocolos)
         if i > 0 and len(linha) > 3 and linha[0].strip() == nome and linha[3].strip()
     }
@@ -359,7 +371,7 @@ def sincronizar_edicoes_do_cliente(aba_protocolos, planilha, cliente):
     for linha in valores_cliente[1:]:
         if len(linha) <= COLUNAS_MANUAIS_INDICE["observacoes_internas"]:
             continue
-        numero = linha[3].strip() if len(linha) > 3 else ""
+        numero = normalizar_numero(linha[3]) if len(linha) > 3 else ""
         linha_protocolos = linha_por_numero.get(numero)
         if not linha_protocolos:
             continue
@@ -408,7 +420,7 @@ def carregar_index_protocolos(aba):
         if len(linha) < 11:
             continue
         cliente = linha[0].strip()
-        numero = linha[3].strip()
+        numero = normalizar_numero(linha[3])
         if not cliente or not numero:
             continue
         index[(cliente, numero)] = {
@@ -505,8 +517,6 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
 
     index, total_linhas = carregar_index_protocolos(aba)
     proxima_linha = total_linhas + 1
-    print(f"  🔎 [{cliente}] index carregado: {len(index)} chave(s), total_linhas={total_linhas}, "
-          f"chaves deste cliente: {sorted(n for c, n in index if c == cliente.upper())}")
 
     novos = 0
     atualizados = 0
@@ -558,7 +568,7 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
         abertos_sem_mudanca_status = []
 
         for s in solicitacoes_recentes:
-            numero = str(s.get("numSolicitacao", "")).strip()
+            numero = normalizar_numero(s.get("numSolicitacao", ""))
             tipo = s.get("tipoSolicitacao", "")
             data_solicitacao = s.get("datSolicitacao", "")
             situacao = s.get("statusSolicitacao", "")
@@ -570,11 +580,6 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
             registro = index.get(chave)
 
             if registro is None:
-                # DEBUG temporário: achar por que um numero que já deveria
-                # estar no index está sendo tratado como novo.
-                parecidos = [k for k in index if k[1] == numero]
-                print(f"    🔎 [{cliente}] chave {chave!r} NÃO encontrada no index (tamanho={len(index)}). "
-                      f"Mesmo numero sob outro cliente no index: {parecidos!r}")
                 detalhe = buscar_detalhe_solicitacao(login_user, uc_referencia, numero, protocolo, token_ne_se)
                 alerta_enviado = "NÃO"
                 if situacao.lower() == "finalizada":
@@ -707,14 +712,14 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
             # execução concorrente/anterior — relê a planilha (estado real, não
             # o índice carregado no início da função) antes de gravar.
             chaves_existentes = {
-                (linha[0].strip(), linha[3].strip())
+                (linha[0].strip(), normalizar_numero(linha[3]))
                 for linha in aba.get_all_values()[1:]
                 if len(linha) > 3
             }
             antes = len(novas_linhas_buffer)
             novas_linhas_buffer = [
                 linha for linha in novas_linhas_buffer
-                if (linha[0], linha[3]) not in chaves_existentes
+                if (linha[0], normalizar_numero(linha[3])) not in chaves_existentes
             ]
             evitadas = antes - len(novas_linhas_buffer)
             if evitadas:
