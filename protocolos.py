@@ -505,6 +505,8 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
 
     index, total_linhas = carregar_index_protocolos(aba)
     proxima_linha = total_linhas + 1
+    print(f"  🔎 [{cliente}] index carregado: {len(index)} chave(s), total_linhas={total_linhas}, "
+          f"chaves deste cliente: {sorted(n for c, n in index if c == cliente.upper())}")
 
     novos = 0
     atualizados = 0
@@ -568,6 +570,11 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
             registro = index.get(chave)
 
             if registro is None:
+                # DEBUG temporário: achar por que um numero que já deveria
+                # estar no index está sendo tratado como novo.
+                parecidos = [k for k in index if k[1] == numero]
+                print(f"    🔎 [{cliente}] chave {chave!r} NÃO encontrada no index (tamanho={len(index)}). "
+                      f"Mesmo numero sob outro cliente no index: {parecidos!r}")
                 detalhe = buscar_detalhe_solicitacao(login_user, uc_referencia, numero, protocolo, token_ne_se)
                 alerta_enviado = "NÃO"
                 if situacao.lower() == "finalizada":
