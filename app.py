@@ -16,7 +16,7 @@ from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ct
 import pandas as pd
 from extrator import processar_cliente
 from gerador_pagos import processar_faturas_pagas, gerar_pdf_pago_upload
-from protocolos import processar_protocolos, carregar_dataframe_protocolos
+from protocolos import processar_protocolos, carregar_dataframe_protocolos, backfillar_colunas_derivadas
 
 load_dotenv(".env")
 
@@ -331,6 +331,21 @@ elif "Acompanhar Protocolos" in modulo_selecionado:
         "(confirmado no manual da Coelba). Continue registrando esses na aba "
         "'Falta de Energia (Manual)' da planilha."
     )
+    with st.expander("🔁 Preenchimento retroativo de NUC / Razão Social"):
+        st.caption(
+            "Preenche as colunas 'NUC (UC real)' e 'Razão Social' em linhas antigas, usando a "
+            "aba 'UCs (de-para)' (precisa que o robô já tenha rodado pelo menos uma vez pra cada "
+            "cliente, pra essa aba ter dado). Não loga na Coelba de novo, só mexe na planilha."
+        )
+        if st.button("Rodar preenchimento retroativo"):
+            with st.spinner("Preenchendo..."):
+                old_stdout = sys.stdout
+                sys.stdout = StreamlitRedirect(st.empty())
+                try:
+                    qtd = backfillar_colunas_derivadas()
+                finally:
+                    sys.stdout = old_stdout
+            st.success(f"✅ {qtd} célula(s) preenchida(s).")
     st.divider()
 
     # ---------- PAINEL VISUAL ----------

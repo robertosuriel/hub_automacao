@@ -34,6 +34,8 @@ credentials_path = os.path.join(base_path, "credentials.json")
 
 PROTOCOLOS_SPREADSHEET_ID = "1_tGDCBzQ_7Swwf4XKfWsU1mv0XHNRlB3jEZYpLaN-yk"
 ABA_PROTOCOLOS = "Protocolos"
+ABA_UCS_DEPARA = "UCs (de-para)"
+CABECALHO_UCS_DEPARA = ["Cliente", "Codigo Cliente", "NUC", "Razao Social", "Endereco", "Bairro", "Municipio"]
 
 # Colunas da aba "Protocolos" (nessa ordem, A..Z):
 # Cliente | CNPJ | UC (referencia) | No da Solicitacao | Tipo | Descricao |
@@ -429,6 +431,39 @@ def _estilizar_aba(aba, total_linhas, congelar_colunas=4):
         print(f"  ⚠️ Não consegui estilizar a aba '{aba.title}': {e}")
 
 
+def atualizar_aba_ucs_depara(planilha, cliente, ucs):
+    """Escreve/atualiza, na aba 'UCs (de-para)', a lista de UCs desse cliente
+    (código, NUC, razão social, endereço) vinda da API. Serve pra conferência
+    manual do matching endereço→UC (ver identificar_uc_por_endereco) e como
+    base pro preenchimento retroativo de linhas antigas. Substitui só as
+    linhas desse cliente a cada rodada (a UC pode ter mudado de endereço)."""
+    nome = cliente.upper()
+    try:
+        aba = planilha.worksheet(ABA_UCS_DEPARA)
+    except Exception:
+        aba = planilha.add_worksheet(title=ABA_UCS_DEPARA, rows=200, cols=len(CABECALHO_UCS_DEPARA))
+        aba.update(range_name="A1", values=[CABECALHO_UCS_DEPARA], value_input_option="RAW")
+
+    valores = aba.get_all_values()
+    if not valores:
+        aba.update(range_name="A1", values=[CABECALHO_UCS_DEPARA], value_input_option="RAW")
+        valores = [CABECALHO_UCS_DEPARA]
+
+    linhas_outros_clientes = [linha for linha in valores[1:] if linha and linha[0].strip() != nome]
+    linhas_novas = [
+        [nome, uc.get("uc", ""), uc.get("nuc", ""), uc.get("nome_cliente", ""),
+         uc.get("endereco", ""), uc.get("bairro", ""), uc.get("municipio", "")]
+        for uc in ucs
+    ]
+
+    todas_linhas = linhas_outros_clientes + linhas_novas
+    total_linhas_atuais = len(valores)
+    if total_linhas_atuais > 1:
+        aba.batch_clear([f"A2:{_coluna_letra(len(CABECALHO_UCS_DEPARA) - 1)}{total_linhas_atuais}"])
+    if todas_linhas:
+        aba.update(range_name="A2", values=todas_linhas, value_input_option="RAW")
+
+
 def obter_ou_criar_aba_cliente(planilha, cliente, cabecalho):
     nome = cliente.upper()
     for ws in planilha.worksheets():
@@ -652,6 +687,10 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
             return False, novos, atualizados, alertas
         uc_referencia = ucs[0]["uc"]
         razao_social = ucs[0].get("nome_cliente", "")
+        try:
+            atualizar_aba_ucs_depara(planilha, cliente, ucs)
+        except Exception as e:
+            print(f"  ⚠️ [{cliente}] Não consegui atualizar a aba 'UCs (de-para)': {e}")
 
         protocolo = obter_protocolo_uc(login_user, uc_referencia, token_ne_se)
         if not protocolo:
@@ -883,6 +922,59 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
     except Exception as e:
         print(f"  ❌ [{cliente}] Erro inesperado: {e}")
         return False, novos, atualizados, alertas
+
+
+def backfillar_colunas_derivadas():
+    """Preenche retroativamente NUC (coluna X) e Razão Social (coluna Y) nas
+    linhas que já existiam na aba 'Protocolos' antes dessas colunas, usando
+    só a aba 'UCs (de-para)' — sem precisar logar na Coelba de novo. Precisa
+    que o robô já tenha rodado pelo menos uma vez pra cada cliente (pra essa
+    aba ter dado), senão o cliente é simplesmente ignorado. Roda sob demanda,
+    não faz parte do fluxo normal."""
+    client = autenticar_google_sheets()
+    planilha = client.open_by_key(PROTOCOLOS_SPREADSHEET_ID)
+    aba = planilha.worksheet(ABA_PROTOCOLOS)
+    try:
+        aba_depara = planilha.worksheet(ABA_UCS_DEPARA)
+    except Exception:
+        print("  ⚠️ Aba 'UCs (de-para)' ainda não existe — rode a consulta de protocolos pelo menos uma vez antes.")
+        return 0
+
+    valores_depara = aba_depara.get_all_values()
+    ucs_por_cliente = {}
+    for linha in valores_depara[1:]:
+        if len(linha) < len(CABECALHO_UCS_DEPARA):
+            continue
+        cliente = linha[0].strip()
+        ucs_por_cliente.setdefault(cliente, []).append({
+            "uc": linha[1], "nuc": linha[2], "nome_cliente": linha[3],
+            "endereco": linha[4], "bairro": linha[5], "municipio": linha[6],
+        })
+
+    valores = aba.get_all_values()
+    updates = []
+    for i, linha in enumerate(valores[1:], start=2):
+        cliente = linha[0].strip() if linha else ""
+        ucs_cliente = ucs_por_cliente.get(cliente)
+        if not ucs_cliente:
+            continue
+        endereco = linha[15] if len(linha) > 15 else ""
+        nuc_atual = linha[COLUNA_NUC_REAL] if len(linha) > COLUNA_NUC_REAL else ""
+        razao_atual = linha[COLUNA_RAZAO_SOCIAL] if len(linha) > COLUNA_RAZAO_SOCIAL else ""
+
+        if not nuc_atual:
+            nuc = identificar_uc_por_endereco(endereco, ucs_cliente)
+            if nuc:
+                updates.append({"range": f"X{i}", "values": [[nuc]]})
+
+        nome_cliente = ucs_cliente[0].get("nome_cliente", "")
+        if not razao_atual and nome_cliente:
+            updates.append({"range": f"Y{i}", "values": [[nome_cliente]]})
+
+    if updates:
+        aba.batch_update(updates, value_input_option="USER_ENTERED")
+    print(f"  ✅ Backfill concluído: {len(updates)} célula(s) preenchida(s).")
+    return len(updates)
 
 
 # --- FUNÇÃO PRINCIPAL CHAMADA PELO STREAMLIT ---
