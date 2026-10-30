@@ -434,9 +434,14 @@ elif "Acompanhar Protocolos" in modulo_selecionado:
             df_filtrado = df_filtrado[df_filtrado["Situacao"] != "Finalizada"]
         elif filtro_situacao == "Finalizadas":
             df_filtrado = df_filtrado[df_filtrado["Situacao"] == "Finalizada"]
-        if busca:
-            mascara = df_filtrado.apply(lambda linha: busca.lower() in " ".join(linha.astype(str)).lower(), axis=1)
-            df_filtrado = df_filtrado[mascara]
+        if busca and not df_filtrado.empty:
+            # Evita .apply(axis=1) linha-a-linha (sensível a diferença de versão do
+            # pandas) — concatena as colunas de forma vetorizada e busca ali.
+            df_str = df_filtrado.astype(str)
+            texto_busca = df_str[df_str.columns[0]].str.cat(
+                [df_str[c] for c in df_str.columns[1:]], sep=" ", na_rep=""
+            )
+            df_filtrado = df_filtrado[texto_busca.str.lower().str.contains(busca.lower(), regex=False, na=False)]
         df_filtrado = df_filtrado.copy()
 
         st.divider()
