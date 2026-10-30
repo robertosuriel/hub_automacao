@@ -16,7 +16,10 @@ from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ct
 import pandas as pd
 from extrator import processar_cliente
 from gerador_pagos import processar_faturas_pagas, gerar_pdf_pago_upload
-from protocolos import processar_protocolos, carregar_dataframe_protocolos, backfillar_colunas_derivadas, RESPONSAVEIS
+from protocolos import (
+    processar_protocolos, carregar_dataframe_protocolos, backfillar_colunas_derivadas,
+    sincronizar_todos_os_clientes, RESPONSAVEIS,
+)
 
 load_dotenv(".env")
 
@@ -331,6 +334,24 @@ elif "Acompanhar Protocolos" in modulo_selecionado:
         "(confirmado no manual da Coelba). Continue registrando esses na aba "
         "'Falta de Energia (Manual)' da planilha."
     )
+    col_sync1, col_sync2 = st.columns([3, 1])
+    with col_sync1:
+        st.caption(
+            "Editou Responsável, Situação interna ou Observações na aba de um cliente? "
+            "O painel abaixo só mostra isso depois que alguém roda a consulta daquele cliente de "
+            "novo — ou clique aqui pra trazer as edições agora, sem precisar logar na Coelba."
+        )
+    with col_sync2:
+        if st.button("🔄 Sincronizar edições", use_container_width=True):
+            with st.spinner("Sincronizando..."):
+                old_stdout = sys.stdout
+                sys.stdout = StreamlitRedirect(st.empty())
+                try:
+                    sincronizar_todos_os_clientes(clientes_disponiveis)
+                finally:
+                    sys.stdout = old_stdout
+            st.success("✅ Edições sincronizadas.")
+            st.rerun()
     with st.expander("🔁 Preenchimento retroativo de NUC / Razão Social"):
         st.caption(
             "Preenche as colunas 'NUC (UC real)' e 'Razão Social' em linhas antigas, usando a "

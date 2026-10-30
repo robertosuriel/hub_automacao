@@ -597,6 +597,22 @@ def sincronizar_edicoes_do_cliente(aba_protocolos, planilha, cliente):
         print(f"  [{cliente}] {len(updates)} edição(ões) manual(is) sincronizada(s) da aba do cliente.")
 
 
+def sincronizar_todos_os_clientes(clientes):
+    """Roda sincronizar_edicoes_do_cliente pra cada cliente da lista, trazendo
+    pra 'Protocolos' qualquer edição manual feita nas abas por cliente (ex:
+    Responsavel, Situacao interna) — sem precisar logar na Coelba nem esperar
+    a próxima consulta rodar. É o que faz o painel do Streamlit (que lê só a
+    aba 'Protocolos') refletir uma edição feita na aba do cliente."""
+    client = autenticar_google_sheets()
+    planilha = client.open_by_key(PROTOCOLOS_SPREADSHEET_ID)
+    aba = planilha.worksheet(ABA_PROTOCOLOS)
+    for cliente in clientes:
+        try:
+            sincronizar_edicoes_do_cliente(aba, planilha, cliente)
+        except Exception as e:
+            print(f"  ⚠️ Erro ao sincronizar {cliente}: {e}")
+
+
 def regenerar_aba_cliente(aba_protocolos, planilha, cliente):
     """Reescreve a aba do cliente do zero com o estado atual (pós-sincronização
     e pós-atualização) da aba 'Protocolos', filtrado pra esse cliente."""
