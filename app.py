@@ -16,7 +16,7 @@ from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ct
 import pandas as pd
 from extrator import processar_cliente
 from gerador_pagos import processar_faturas_pagas, gerar_pdf_pago_upload
-from protocolos import processar_protocolos, carregar_dataframe_protocolos, backfillar_colunas_derivadas
+from protocolos import processar_protocolos, carregar_dataframe_protocolos, backfillar_colunas_derivadas, RESPONSAVEIS
 
 load_dotenv(".env")
 
@@ -359,24 +359,56 @@ elif "Acompanhar Protocolos" in modulo_selecionado:
     if df_protocolos is not None and not df_protocolos.empty:
         total_geral = len(df_protocolos)
 
+        # --- Colunas derivadas, calculadas uma vez sobre a planilha toda (antes dos filtros) ---
+        if "Tipo" in df_protocolos.columns:
+            df_protocolos["Canal"] = df_protocolos["Tipo"].astype(str).apply(
+                lambda t: "Ouvidoria" if "ouvidoria" in t.lower() else "Coelba"
+            )
+        if "Hist. Prazo" in df_protocolos.columns:
+            df_protocolos["Qtd Prorrogações"] = df_protocolos["Hist. Prazo"].apply(
+                lambda h: len([l for l in str(h or "").split("\n") if l.strip()])
+            )
+
         # --- Filtros (calculados ANTES dos indicadores, pra eles refletirem o que está filtrado) ---
-        col_f1, col_f2, col_f3, col_f4 = st.columns([1, 1, 1, 2])
+        st.markdown("**Filtros**")
+        col_f1, col_f2, col_f3, col_f4 = st.columns(4)
         with col_f1:
             opcoes_cliente = sorted(df_protocolos["Cliente"].unique()) if "Cliente" in df_protocolos.columns else []
-            filtro_cliente = st.multiselect("Cliente:", opcoes_cliente, default=opcoes_cliente)
+            filtro_cliente = st.multiselect("Cliente", opcoes_cliente, default=opcoes_cliente, key="filtro_cliente")
         with col_f2:
-            filtro_situacao = st.selectbox("Situação:", ["Todas", "Em aberto", "Finalizadas"])
-        with col_f3:
             opcoes_tipo = sorted(df_protocolos["Tipo"].unique()) if "Tipo" in df_protocolos.columns else []
-            filtro_tipo = st.multiselect("Tipo:", opcoes_tipo, default=opcoes_tipo)
+            filtro_tipo = st.multiselect("Tipo", opcoes_tipo, default=opcoes_tipo, key="filtro_tipo")
+        with col_f3:
+            opcoes_canal = ["Coelba", "Ouvidoria"]
+            filtro_canal = st.multiselect("Canal", opcoes_canal, default=opcoes_canal, key="filtro_canal")
         with col_f4:
-            busca = st.text_input("Buscar (nº, endereço, tipo...):", "")
+            opcoes_responsavel = [r for r in RESPONSAVEIS if r != "-"] + ["Sem responsável"]
+            filtro_responsavel = st.multiselect("Responsável", opcoes_responsavel, default=opcoes_responsavel, key="filtro_responsavel")
+
+        col_f5, col_f6, col_f7 = st.columns([1, 2, 0.6])
+        with col_f5:
+            filtro_situacao = st.selectbox("Situação", ["Todas", "Em aberto", "Finalizadas"], key="filtro_situacao")
+        with col_f6:
+            busca = st.text_input("Buscar (nº, endereço, tipo...)", "", key="busca")
+        with col_f7:
+            st.markdown("<div style='height: 1.6rem'></div>", unsafe_allow_html=True)
+            if st.button("🔄 Limpar", use_container_width=True):
+                for k in ("filtro_cliente", "filtro_tipo", "filtro_canal", "filtro_responsavel", "filtro_situacao", "busca"):
+                    st.session_state.pop(k, None)
+                st.rerun()
 
         df_filtrado = df_protocolos
         if "Cliente" in df_filtrado.columns:
             df_filtrado = df_filtrado[df_filtrado["Cliente"].isin(filtro_cliente)]
         if "Tipo" in df_filtrado.columns:
             df_filtrado = df_filtrado[df_filtrado["Tipo"].isin(filtro_tipo)]
+        if "Canal" in df_filtrado.columns:
+            df_filtrado = df_filtrado[df_filtrado["Canal"].isin(filtro_canal)]
+        if "Responsavel" in df_filtrado.columns:
+            resp_classificado = df_filtrado["Responsavel"].apply(
+                lambda v: v if str(v).strip() not in ("", "-", "nan") else "Sem responsável"
+            )
+            df_filtrado = df_filtrado[resp_classificado.isin(filtro_responsavel)]
         if filtro_situacao == "Em aberto":
             df_filtrado = df_filtrado[df_filtrado["Situacao"] != "Finalizada"]
         elif filtro_situacao == "Finalizadas":
@@ -386,15 +418,7 @@ elif "Acompanhar Protocolos" in modulo_selecionado:
             df_filtrado = df_filtrado[mascara]
         df_filtrado = df_filtrado.copy()
 
-        # --- Colunas derivadas (canal e qtd. de prorrogações), sobre o filtro atual ---
-        if "Tipo" in df_filtrado.columns:
-            df_filtrado["Canal"] = df_filtrado["Tipo"].astype(str).apply(
-                lambda t: "Ouvidoria" if "ouvidoria" in t.lower() else "Coelba"
-            )
-        if "Hist. Prazo" in df_filtrado.columns:
-            df_filtrado["Qtd Prorrogações"] = df_filtrado["Hist. Prazo"].apply(
-                lambda h: len([l for l in str(h or "").split("\n") if l.strip()])
-            )
+        st.divider()
 
         # --- Indicadores (refletem os filtros acima, não o total geral da planilha) ---
         situacao_col = df_filtrado["Situacao"] if "Situacao" in df_filtrado.columns else pd.Series(dtype=str)
@@ -405,28 +429,65 @@ elif "Acompanhar Protocolos" in modulo_selecionado:
         abertos = total - finalizados
         vencendo = int(((dias_col <= 3) & (dias_col >= 0)).sum())
         vencidos = int((dias_col < 0).sum())
-
-        col_a, col_b, col_c, col_d = st.columns(4)
-        col_a.metric("Total", total)
-        col_b.metric("Em aberto", abertos)
-        col_c.metric("Vencendo (≤3 dias)", vencendo)
-        col_d.metric("Vencidos", vencidos)
-
-        qtd_coelba = int((df_filtrado["Canal"] == "Coelba").sum()) if "Canal" in df_filtrado.columns else 0
-        qtd_ouvidoria = int((df_filtrado["Canal"] == "Ouvidoria").sum()) if "Canal" in df_filtrado.columns else 0
         qtd_prorrogacao_excessiva = (
             int((df_filtrado["Qtd Prorrogações"] > 4).sum()) if "Qtd Prorrogações" in df_filtrado.columns else 0
         )
-        col_e, col_f, col_g = st.columns(3)
-        col_e.metric("Canal Coelba", qtd_coelba)
-        col_f.metric("Canal Ouvidoria", qtd_ouvidoria)
-        col_g.metric("Com +4 prorrogações ⚠️", qtd_prorrogacao_excessiva)
+
+        NEUTRO, AMARELO, VERMELHO = "#9CA3AF", "#F59E0B", "#DC2626"
+
+        def _tile(coluna, label, valor, cor):
+            coluna.markdown(
+                f"""<div style="background:#fff;border-radius:12px;padding:14px 18px;
+                border-left:5px solid {cor};box-shadow:0 2px 6px rgba(0,0,0,0.05);min-height:82px;">
+                <div style="font-size:0.72rem;color:#6b7280;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;">{label}</div>
+                <div style="font-size:1.9rem;font-weight:800;color:#31333F;line-height:1.3;">{valor}</div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
+
+        col_a, col_b, col_c, col_d = st.columns(4)
+        _tile(col_a, "Total", total, "#FF3366")
+        _tile(col_b, "Em aberto", abertos, "#0B6B47")
+        _tile(col_c, "Vencendo (≤3 dias)", vencendo, AMARELO if vencendo else NEUTRO)
+        _tile(col_d, "Vencidos", vencidos, VERMELHO if vencidos else NEUTRO)
+
+        if qtd_prorrogacao_excessiva:
+            st.markdown(
+                f"""<div style="margin-top:12px;background:#FEF2F2;border:1px solid #FCA5A5;border-radius:10px;
+                padding:10px 16px;color:#7F1D1D;font-weight:600;">⚠️ {qtd_prorrogacao_excessiva} protocolo(s) já passaram de 4 prorrogações de prazo — considerar abrir reclamação.</div>""",
+                unsafe_allow_html=True,
+            )
+
+        # --- Canal: identidade fixa (Coelba sempre verde, Ouvidoria sempre azul) ---
+        qtd_coelba = int((df_filtrado["Canal"] == "Coelba").sum()) if "Canal" in df_filtrado.columns else 0
+        qtd_ouvidoria = int((df_filtrado["Canal"] == "Ouvidoria").sum()) if "Canal" in df_filtrado.columns else 0
+        total_canal = qtd_coelba + qtd_ouvidoria
+        if total_canal:
+            pct_coelba = qtd_coelba / total_canal * 100
+            st.markdown(
+                f"""<div style="margin:18px 0 4px;">
+                <div style="display:flex;justify-content:space-between;font-size:0.82rem;color:#31333F;font-weight:600;margin-bottom:5px;">
+                    <span><span style="color:#0B6B47;">●</span> Coelba — {qtd_coelba}</span>
+                    <span><span style="color:#2563EB;">●</span> Ouvidoria — {qtd_ouvidoria}</span>
+                </div>
+                <div style="display:flex;height:12px;border-radius:6px;overflow:hidden;background:#F1F5F9;">
+                    <div style="width:{pct_coelba:.1f}%;background:#0B6B47;"></div>
+                    <div style="width:{100 - pct_coelba:.1f}%;background:#2563EB;"></div>
+                </div>
+                </div>""",
+                unsafe_allow_html=True,
+            )
 
         if "Tipo" in df_filtrado.columns and total > 0:
-            with st.expander("📊 Protocolos por tipo"):
+            contagem_tipo = df_filtrado["Tipo"].value_counts().rename_axis("Tipo").reset_index(name="Quantidade")
+            with st.expander(f"📊 Protocolos por tipo ({len(contagem_tipo)})"):
                 st.dataframe(
-                    df_filtrado["Tipo"].value_counts().rename_axis("Tipo").reset_index(name="Quantidade"),
-                    use_container_width=True, hide_index=True,
+                    contagem_tipo, use_container_width=True, hide_index=True,
+                    column_config={
+                        "Quantidade": st.column_config.ProgressColumn(
+                            "Quantidade", min_value=0, max_value=int(contagem_tipo["Quantidade"].max()), format="%d",
+                        ),
+                    },
                 )
 
         # --- O que mudou recentemente (últimas 48h, olhando a planilha toda, não só o filtro) ---
