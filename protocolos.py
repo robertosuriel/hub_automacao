@@ -35,26 +35,33 @@ credentials_path = os.path.join(base_path, "credentials.json")
 PROTOCOLOS_SPREADSHEET_ID = "1_tGDCBzQ_7Swwf4XKfWsU1mv0XHNRlB3jEZYpLaN-yk"
 ABA_PROTOCOLOS = "Protocolos"
 
-# Colunas da aba "Protocolos" (nessa ordem, A..W):
+# Colunas da aba "Protocolos" (nessa ordem, A..X):
 # Cliente | CNPJ | UC (referencia) | No da Solicitacao | Tipo | Descricao |
 # Data da Solicitacao | Situacao | Prazo | Ultima Atualizacao | Alerta Enviado |
 # Descoberto em | Observacoes | Resultado | Historico | Endereco |
 # Instancia | Protocolo origem | Resolvido | Situacao interna | Observacoes internas |
-# Dias p/ prazo | Historico Prazo
+# Dias p/ prazo | Historico Prazo | NUC (UC real)
 #
 # IMPORTANTE sobre a coluna "UC (referencia)": o pedidos-header NAO e por UC
 # (confirmado: a mesma lista de ate 30 solicitacoes recentes volta
 # independente de qual UC valida da conta voce passa). Entao essa coluna guarda
 # so a UC usada na chamada, nao necessariamente a UC "dona" da solicitacao.
-# O campo confiavel pra identificar o imovel e o Endereco (coluna P).
+# O campo confiavel pra identificar o imovel e o Endereco (coluna P), usado
+# pra achar a UC real na coluna X (ver identificar_uc_por_endereco).
 
 # Colunas Q..V (0-indexed 16..21), editadas manualmente pela equipe nas abas
 # por cliente. O robo le essas colunas ANTES de sobrescrever a aba do cliente,
 # pra nao perder edicao.
 # Coluna W (0-indexed 22): Historico Prazo — preenchida automaticamente pelo robo
 # quando o prazo muda (formato: "[data] Prazo: antigo → novo").
+# Coluna X (0-indexed 23): NUC (UC real) — Numero da Unidade Consumidora
+# (formato Coelba, ex: "6.320.126.028-03") identificado batendo o Endereco
+# (coluna P) contra a lista de UCs da conta. Fica em branco quando nao bate
+# com nenhuma UC ou bate com mais de uma (ambiguo) — ver
+# identificar_uc_por_endereco.
 COLUNAS_MANUAIS_INDICE = {"instancia": 16, "protocolo_origem": 17, "resolvido": 18, "situacao_interna": 19, "observacoes_internas": 20}
 COLUNA_HISTORICO_PRAZO = 22  # W
+COLUNA_NUC_REAL = 23  # X
 
 COR_HEADER = {"red": 0.043, "green": 0.42, "blue": 0.278}  # #0B6B47
 COR_BANDA_PAR = {"red": 0.933, "green": 0.965, "blue": 0.945}
@@ -62,9 +69,9 @@ COR_BORDA = {"color": {"red": 0.85, "green": 0.85, "blue": 0.85}, "style": "SOLI
 LARGURAS_COLUNAS = {
     0: 110, 1: 120, 2: 110, 3: 130, 4: 150, 5: 170, 6: 100, 7: 110, 8: 100,
     9: 130, 10: 100, 11: 130, 12: 160, 13: 260, 14: 280, 15: 260, 16: 80,
-    17: 140, 18: 90, 19: 170, 20: 260, 21: 100, 22: 280,
+    17: 140, 18: 90, 19: 170, 20: 260, 21: 100, 22: 280, 23: 160,
 }
-TOTAL_COLUNAS = 23  # A..W
+TOTAL_COLUNAS = 24  # A..X
 
 
 def normalizar_numero(numero):
@@ -94,7 +101,22 @@ def formula_dias_prazo(linha):
 
 # --- APIs da Agência Virtual (mesmo backend usado pelo extrator.py pra faturas) ---
 
+def _formatar_nuc(codigo_uc_aneel):
+    """Converte o codigoUcAneel cru da API (ex: "000632012602803") pro
+    formato que aparece na tela da Coelba (ex: "6.320.126.028-03"). Se o
+    numero de digitos nao bater com o esperado (12, apos tirar zeros a
+    esquerda), devolve cru em vez de arriscar formatar errado."""
+    digitos = str(codigo_uc_aneel or "").lstrip("0")
+    if len(digitos) != 12:
+        return str(codigo_uc_aneel or "")
+    return f"{digitos[0]}.{digitos[1:4]}.{digitos[4:7]}.{digitos[7:10]}-{digitos[10:12]}"
+
+
 def obter_ucs_cliente(login_user, token_ne_se):
+    """Lista de UCs da conta. Cada item traz 'uc' (codigo usado nas outras
+    chamadas de API), 'nuc' (Numero da Unidade Consumidora formatado) e o
+    endereco, pra permitir identificar qual UC e a dona de cada solicitacao
+    (ver identificar_uc_por_endereco)."""
     headers_api = {"User-Agent": "Mozilla/5.0", "Authorization": "Bearer " + token_ne_se}
     try:
         r = requests.get(
@@ -105,10 +127,55 @@ def obter_ucs_cliente(login_user, token_ne_se):
             },
             headers=headers_api, timeout=30,
         )
-        return [uc['uc'] for uc in r.json().get("ucs", [])]
+        resultado = []
+        for item in r.json().get("ucs", []):
+            local = item.get("local") or {}
+            resultado.append({
+                "uc": item.get("uc", ""),
+                "nuc": _formatar_nuc(item.get("codigoUcAneel", "")),
+                "endereco": local.get("endereco", ""),
+                "bairro": local.get("bairro", ""),
+                "municipio": local.get("municipio", ""),
+            })
+        return resultado
     except Exception as e:
         print(f"  ⚠️ Erro ao obter UCs: {e}")
         return []
+
+
+def _normalizar_texto_endereco(texto):
+    import re
+    import unicodedata
+    if not texto:
+        return ""
+    texto = unicodedata.normalize("NFKD", str(texto)).encode("ascii", "ignore").decode("ascii")
+    texto = texto.upper()
+    return re.sub(r"[^A-Z0-9]+", " ", texto).strip()
+
+
+def identificar_uc_por_endereco(endereco_solicitacao, ucs_info):
+    """Casa o Endereco de uma solicitacao (vindo de pedidos-detalhe) contra a
+    lista de UCs do cliente (cada uma com endereco vindo da API de UCs), pra
+    achar a UC "dona" real da solicitacao. Devolve o NUC formatado se achar
+    exatamente uma UC compativel; devolve "" se nao achar nenhuma ou achar
+    mais de uma (ambiguo) — melhor deixar em branco do que arriscar errado."""
+    alvo = _normalizar_texto_endereco(endereco_solicitacao)
+    if not alvo:
+        return ""
+    candidatas = []
+    for uc in ucs_info:
+        endereco_uc = _normalizar_texto_endereco(
+            f"{uc.get('endereco', '')} {uc.get('bairro', '')} {uc.get('municipio', '')}"
+        )
+        endereco_uc_curto = _normalizar_texto_endereco(uc.get("endereco", ""))
+        if not endereco_uc_curto:
+            continue
+        if endereco_uc_curto in alvo or alvo in endereco_uc:
+            candidatas.append(uc)
+    nucs_unicos = {c["nuc"] for c in candidatas if c.get("nuc")}
+    if len(nucs_unicos) == 1:
+        return candidatas[0]["nuc"]
+    return ""
 
 
 def obter_protocolo_uc(login_user, uc_codigo, token_ne_se):
@@ -399,7 +466,7 @@ def regenerar_aba_cliente(aba_protocolos, planilha, cliente):
     aba_cliente = obter_ou_criar_aba_cliente(planilha, cliente, cabecalho)
     total_linhas_atuais = len(aba_cliente.get_all_values())
     if total_linhas_atuais > 1:
-        aba_cliente.batch_clear([f"A2:W{total_linhas_atuais}"])
+        aba_cliente.batch_clear([f"A2:X{total_linhas_atuais}"])
     aba_cliente.update(range_name="A1", values=[cabecalho], value_input_option="RAW")
     if linhas_cliente:
         aba_cliente.update(range_name="A2", values=linhas_cliente, value_input_option="USER_ENTERED")
@@ -545,7 +612,7 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
         if not ucs:
             print(f"  ⚠️ [{cliente}] Nenhuma UC encontrada.")
             return False, novos, atualizados, alertas
-        uc_referencia = ucs[0]
+        uc_referencia = ucs[0]["uc"]
 
         protocolo = obter_protocolo_uc(login_user, uc_referencia, token_ne_se)
         if not protocolo:
@@ -586,6 +653,7 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
                     if enviar_alerta_email(cliente, numero, tipo):
                         alerta_enviado = "SIM"
                     alertas += 1
+                nuc_real = identificar_uc_por_endereco(detalhe.get("endereco", ""), ucs)
                 linha_valores = [
                     cliente.upper(), login_user, uc_referencia, numero, tipo,
                     detalhe.get("descricao", ""), data_solicitacao, situacao,
@@ -600,6 +668,8 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
                 ]
                 # Coluna W (Historico Prazo) — vazia pra solicitações novas
                 linha_valores.append("")
+                # Coluna X (NUC real) — identificado pelo endereço, vazio se não bater
+                linha_valores.append(nuc_real)
                 novas_linhas_buffer.append(linha_valores)
                 index[chave] = {"linha": proxima_linha, "situacao": situacao, "alerta_enviado": alerta_enviado,
                                 "prazo": detalhe.get("prazo", ""), "ultima_atualizacao": detalhe.get("ultima_atualizacao", ""),
@@ -628,6 +698,7 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
                     detalhe.get("historico", ""),
                     detalhe.get("endereco", ""),
                     hist_prazo,
+                    identificar_uc_por_endereco(detalhe.get("endereco", ""), ucs),
                 ))
                 index[chave]["situacao"] = situacao
                 index[chave]["alerta_enviado"] = alerta_enviado
@@ -699,6 +770,7 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
                         detalhe.get("historico", ""),
                         detalhe.get("endereco", ""),
                         hist_prazo,
+                        identificar_uc_por_endereco(detalhe.get("endereco", ""), ucs),
                     ))
                     if mudou_status:
                         index[chave]["situacao"] = nova_situacao
@@ -741,6 +813,7 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
             for item in atualizacoes_buffer:
                 linha, descricao, valores_hk, resultado, historico, endereco = item[:6]
                 hist_prazo = item[6] if len(item) > 6 else ""
+                nuc_real = item[7] if len(item) > 7 else ""
                 if descricao:
                     updates.append({"range": f"F{linha}", "values": [[descricao]]})
                 updates.append({"range": f"H{linha}:K{linha}", "values": [valores_hk]})
@@ -752,6 +825,8 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
                     updates.append({"range": f"O{linha}", "values": [[historico]]})
                 if endereco:
                     updates.append({"range": f"P{linha}", "values": [[endereco]]})
+                if nuc_real:
+                    updates.append({"range": f"X{linha}", "values": [[nuc_real]]})
             aba.batch_update(updates, value_input_option="USER_ENTERED")
 
         regenerar_aba_cliente(aba, planilha, cliente)

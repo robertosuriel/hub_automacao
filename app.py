@@ -377,7 +377,7 @@ elif "Acompanhar Protocolos" in modulo_selecionado:
 
         colunas_exibir = [
             "Cliente", "No da Solicitacao", "Tipo", "Descricao", "Situacao", "Prazo",
-            "Dias p/ prazo", "Resultado", "Endereco", "Situacao interna", "Observacoes internas",
+            "Dias p/ prazo", "Resultado", "Endereco", "NUC (UC real)", "Situacao interna", "Observacoes internas",
         ]
         colunas_exibir = [c for c in colunas_exibir if c in df_filtrado.columns]
 
