@@ -35,12 +35,12 @@ credentials_path = os.path.join(base_path, "credentials.json")
 PROTOCOLOS_SPREADSHEET_ID = "1_tGDCBzQ_7Swwf4XKfWsU1mv0XHNRlB3jEZYpLaN-yk"
 ABA_PROTOCOLOS = "Protocolos"
 
-# Colunas da aba "Protocolos" (nessa ordem, A..X):
+# Colunas da aba "Protocolos" (nessa ordem, A..Z):
 # Cliente | CNPJ | UC (referencia) | No da Solicitacao | Tipo | Descricao |
 # Data da Solicitacao | Situacao | Prazo | Ultima Atualizacao | Alerta Enviado |
 # Descoberto em | Observacoes | Resultado | Historico | Endereco |
 # Instancia | Protocolo origem | Resolvido | Situacao interna | Observacoes internas |
-# Dias p/ prazo | Historico Prazo | NUC (UC real)
+# Dias p/ prazo | Historico Prazo | NUC (UC real) | Razao Social | Responsavel
 #
 # IMPORTANTE sobre a coluna "UC (referencia)": o pedidos-header NAO e por UC
 # (confirmado: a mesma lista de ate 30 solicitacoes recentes volta
@@ -49,9 +49,9 @@ ABA_PROTOCOLOS = "Protocolos"
 # O campo confiavel pra identificar o imovel e o Endereco (coluna P), usado
 # pra achar a UC real na coluna X (ver identificar_uc_por_endereco).
 
-# Colunas Q..V (0-indexed 16..21), editadas manualmente pela equipe nas abas
-# por cliente. O robo le essas colunas ANTES de sobrescrever a aba do cliente,
-# pra nao perder edicao.
+# Colunas manuais (editadas pela equipe nas abas por cliente). O robo le essas
+# colunas ANTES de sobrescrever a aba do cliente, pra nao perder edicao. Nem
+# toda coluna manual e contigua (Responsavel foi adicionada depois, no fim).
 # Coluna W (0-indexed 22): Historico Prazo — preenchida automaticamente pelo robo
 # quando o prazo muda (formato: "[data] Prazo: antigo → novo").
 # Coluna X (0-indexed 23): NUC (UC real) — Numero da Unidade Consumidora
@@ -59,9 +59,18 @@ ABA_PROTOCOLOS = "Protocolos"
 # (coluna P) contra a lista de UCs da conta. Fica em branco quando nao bate
 # com nenhuma UC ou bate com mais de uma (ambiguo) — ver
 # identificar_uc_por_endereco.
-COLUNAS_MANUAIS_INDICE = {"instancia": 16, "protocolo_origem": 17, "resolvido": 18, "situacao_interna": 19, "observacoes_internas": 20}
+# Coluna Y (0-indexed 24): Razao Social — nome completo do cliente, vindo da
+# mesma API de UCs (campo nomeCliente).
+# Coluna Z (0-indexed 25): Responsavel — texto livre, manual, mesma logica das
+# outras colunas manuais (Instancia, Protocolo origem etc).
+COLUNAS_MANUAIS_INDICE = {
+    "instancia": 16, "protocolo_origem": 17, "resolvido": 18, "situacao_interna": 19,
+    "observacoes_internas": 20, "responsavel": 25,
+}
 COLUNA_HISTORICO_PRAZO = 22  # W
 COLUNA_NUC_REAL = 23  # X
+COLUNA_RAZAO_SOCIAL = 24  # Y
+COLUNA_RESPONSAVEL = 25  # Z
 
 COR_HEADER = {"red": 0.043, "green": 0.42, "blue": 0.278}  # #0B6B47
 COR_BANDA_PAR = {"red": 0.933, "green": 0.965, "blue": 0.945}
@@ -69,9 +78,9 @@ COR_BORDA = {"color": {"red": 0.85, "green": 0.85, "blue": 0.85}, "style": "SOLI
 LARGURAS_COLUNAS = {
     0: 110, 1: 120, 2: 110, 3: 130, 4: 150, 5: 170, 6: 100, 7: 110, 8: 100,
     9: 130, 10: 100, 11: 130, 12: 160, 13: 260, 14: 280, 15: 260, 16: 80,
-    17: 140, 18: 90, 19: 170, 20: 260, 21: 100, 22: 280, 23: 160,
+    17: 140, 18: 90, 19: 170, 20: 260, 21: 100, 22: 280, 23: 160, 24: 220, 25: 150,
 }
-TOTAL_COLUNAS = 24  # A..X
+TOTAL_COLUNAS = 26  # A..Z
 
 
 def normalizar_numero(numero):
@@ -100,6 +109,16 @@ def formula_dias_prazo(linha):
 
 
 # --- APIs da Agência Virtual (mesmo backend usado pelo extrator.py pra faturas) ---
+
+def _coluna_letra(indice):
+    """Converte um índice de coluna 0-indexed pra letra do Sheets (0->A, 25->Z, 26->AA...)."""
+    letra = ""
+    n = indice + 1
+    while n > 0:
+        n, resto = divmod(n - 1, 26)
+        letra = chr(65 + resto) + letra
+    return letra
+
 
 def _formatar_nuc(codigo_uc_aneel):
     """Converte o codigoUcAneel cru da API (ex: "000632012602803") pro
@@ -133,6 +152,7 @@ def obter_ucs_cliente(login_user, token_ne_se):
             resultado.append({
                 "uc": item.get("uc", ""),
                 "nuc": _formatar_nuc(item.get("codigoUcAneel", "")),
+                "nome_cliente": item.get("nomeCliente", ""),
                 "endereco": local.get("endereco", ""),
                 "bairro": local.get("bairro", ""),
                 "municipio": local.get("municipio", ""),
@@ -354,10 +374,16 @@ def _estilizar_aba(aba, total_linhas, congelar_colunas=4):
         # has alternating background colors" — isso roda de novo a cada
         # regeneração da aba, então precisa ser idempotente).
         meta = planilha.fetch_sheet_metadata()
+        filtro_existente = None
         for sheet in meta.get("sheets", []):
             if sheet.get("properties", {}).get("sheetId") == sheet_id:
                 for banda in sheet.get("bandedRanges", []):
                     requests_batch.append({"deleteBanding": {"bandedRangeId": banda["bandedRangeId"]}})
+                # Preserva os critérios de filtro que a equipe tiver configurado
+                # na aba (ex: filtrar por um número de solicitação) — sem isso,
+                # cada rodada do robô sobrescrevia o filtro com um "em branco",
+                # apagando o que a pessoa tinha selecionado.
+                filtro_existente = sheet.get("basicFilter")
                 break
 
         requests_batch += [
@@ -382,7 +408,11 @@ def _estilizar_aba(aba, total_linhas, congelar_colunas=4):
                 "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": fim, "startColumnIndex": 0, "endColumnIndex": TOTAL_COLUNAS},
                 "rowProperties": {"headerColor": COR_HEADER, "firstBandColor": {"red": 1, "green": 1, "blue": 1}, "secondBandColor": COR_BANDA_PAR},
             }}},
-            {"setBasicFilter": {"filter": {"range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": fim, "startColumnIndex": 0, "endColumnIndex": TOTAL_COLUNAS}}}},
+            {"setBasicFilter": {"filter": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": fim, "startColumnIndex": 0, "endColumnIndex": TOTAL_COLUNAS},
+                **({"criteria": filtro_existente["criteria"]} if filtro_existente and filtro_existente.get("criteria") else {}),
+                **({"sortSpecs": filtro_existente["sortSpecs"]} if filtro_existente and filtro_existente.get("sortSpecs") else {}),
+            }}},
             {"updateBorders": {
                 "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": fim, "startColumnIndex": 0, "endColumnIndex": TOTAL_COLUNAS},
                 "top": COR_BORDA, "bottom": COR_BORDA, "left": COR_BORDA, "right": COR_BORDA,
@@ -412,8 +442,11 @@ def obter_ou_criar_aba_cliente(planilha, cliente, cabecalho):
 def sincronizar_edicoes_do_cliente(aba_protocolos, planilha, cliente):
     """Lê a aba do cliente (se existir) e aplica na aba 'Protocolos' qualquer
     edição manual feita lá (Instancia, Protocolo origem, Resolvido, Situacao
-    interna, Observacoes internas) — ANTES de regenerar a aba do cliente, pra
-    não perder o que a equipe editou desde a última rodada."""
+    interna, Observacoes internas, Responsavel) — ANTES de regenerar a aba do
+    cliente, pra não perder o que a equipe editou desde a última rodada.
+    Os índices manuais não são todos contíguos (Responsavel foi adicionada
+    depois, no fim da planilha), então sincroniza célula a célula em vez de
+    depender de um único range contíguo."""
     nome = cliente.upper()
     aba_cliente = None
     for ws in planilha.worksheets():
@@ -434,19 +467,24 @@ def sincronizar_edicoes_do_cliente(aba_protocolos, planilha, cliente):
         if i > 0 and len(linha) > 3 and linha[0].strip() == nome and linha[3].strip()
     }
 
+    indices_manuais = sorted(COLUNAS_MANUAIS_INDICE.values())
+    maior_indice_manual = indices_manuais[-1]
+
     updates = []
     for linha in valores_cliente[1:]:
-        if len(linha) <= COLUNAS_MANUAIS_INDICE["observacoes_internas"]:
+        if len(linha) <= maior_indice_manual:
             continue
         numero = normalizar_numero(linha[3]) if len(linha) > 3 else ""
         linha_protocolos = linha_por_numero.get(numero)
         if not linha_protocolos:
             continue
-        valores_manuais = [linha[idx] for idx in range(16, 21)]  # Q..U
         atual = valores_protocolos[linha_protocolos - 1]
-        atual_manuais = [atual[idx] if len(atual) > idx else "" for idx in range(16, 21)]
-        if valores_manuais != atual_manuais:
-            updates.append({"range": f"Q{linha_protocolos}:U{linha_protocolos}", "values": [valores_manuais]})
+        for idx in indices_manuais:
+            valor_cliente = linha[idx] if len(linha) > idx else ""
+            valor_atual = atual[idx] if len(atual) > idx else ""
+            if valor_cliente != valor_atual:
+                coluna = _coluna_letra(idx)
+                updates.append({"range": f"{coluna}{linha_protocolos}", "values": [[valor_cliente]]})
 
     if updates:
         aba_protocolos.batch_update(updates, value_input_option="USER_ENTERED")
@@ -466,7 +504,7 @@ def regenerar_aba_cliente(aba_protocolos, planilha, cliente):
     aba_cliente = obter_ou_criar_aba_cliente(planilha, cliente, cabecalho)
     total_linhas_atuais = len(aba_cliente.get_all_values())
     if total_linhas_atuais > 1:
-        aba_cliente.batch_clear([f"A2:X{total_linhas_atuais}"])
+        aba_cliente.batch_clear([f"A2:{_coluna_letra(TOTAL_COLUNAS - 1)}{total_linhas_atuais}"])
     aba_cliente.update(range_name="A1", values=[cabecalho], value_input_option="RAW")
     if linhas_cliente:
         aba_cliente.update(range_name="A2", values=linhas_cliente, value_input_option="USER_ENTERED")
@@ -613,6 +651,7 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
             print(f"  ⚠️ [{cliente}] Nenhuma UC encontrada.")
             return False, novos, atualizados, alertas
         uc_referencia = ucs[0]["uc"]
+        razao_social = ucs[0].get("nome_cliente", "")
 
         protocolo = obter_protocolo_uc(login_user, uc_referencia, token_ne_se)
         if not protocolo:
@@ -670,6 +709,10 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
                 linha_valores.append("")
                 # Coluna X (NUC real) — identificado pelo endereço, vazio se não bater
                 linha_valores.append(nuc_real)
+                # Coluna Y (Razao Social) — constante por cliente, vinda da API de UCs
+                linha_valores.append(razao_social)
+                # Coluna Z (Responsavel) — manual, começa vazia
+                linha_valores.append("")
                 novas_linhas_buffer.append(linha_valores)
                 index[chave] = {"linha": proxima_linha, "situacao": situacao, "alerta_enviado": alerta_enviado,
                                 "prazo": detalhe.get("prazo", ""), "ultima_atualizacao": detalhe.get("ultima_atualizacao", ""),
@@ -699,6 +742,7 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
                     detalhe.get("endereco", ""),
                     hist_prazo,
                     identificar_uc_por_endereco(detalhe.get("endereco", ""), ucs),
+                    razao_social,
                 ))
                 index[chave]["situacao"] = situacao
                 index[chave]["alerta_enviado"] = alerta_enviado
@@ -771,6 +815,7 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
                         detalhe.get("endereco", ""),
                         hist_prazo,
                         identificar_uc_por_endereco(detalhe.get("endereco", ""), ucs),
+                        razao_social,
                     ))
                     if mudou_status:
                         index[chave]["situacao"] = nova_situacao
@@ -814,6 +859,7 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
                 linha, descricao, valores_hk, resultado, historico, endereco = item[:6]
                 hist_prazo = item[6] if len(item) > 6 else ""
                 nuc_real = item[7] if len(item) > 7 else ""
+                razao_social_item = item[8] if len(item) > 8 else ""
                 if descricao:
                     updates.append({"range": f"F{linha}", "values": [[descricao]]})
                 updates.append({"range": f"H{linha}:K{linha}", "values": [valores_hk]})
@@ -827,6 +873,8 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
                     updates.append({"range": f"P{linha}", "values": [[endereco]]})
                 if nuc_real:
                     updates.append({"range": f"X{linha}", "values": [[nuc_real]]})
+                if razao_social_item:
+                    updates.append({"range": f"Y{linha}", "values": [[razao_social_item]]})
             aba.batch_update(updates, value_input_option="USER_ENTERED")
 
         regenerar_aba_cliente(aba, planilha, cliente)

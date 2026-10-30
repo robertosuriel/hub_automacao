@@ -1,8 +1,10 @@
 import streamlit as st
 import os
+import re
 import sys
 import threading
 import json
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 # --- TRUQUE DE SEGURANÇA PARA A NUVEM ---
@@ -340,10 +342,50 @@ elif "Acompanhar Protocolos" in modulo_selecionado:
         st.error(f"Não consegui carregar a planilha agora: {e}")
 
     if df_protocolos is not None and not df_protocolos.empty:
-        situacao_col = df_protocolos["Situacao"] if "Situacao" in df_protocolos.columns else pd.Series(dtype=str)
-        dias_col = df_protocolos["Dias p/ prazo"] if "Dias p/ prazo" in df_protocolos.columns else pd.Series(dtype=float)
+        total_geral = len(df_protocolos)
 
-        total = len(df_protocolos)
+        # --- Filtros (calculados ANTES dos indicadores, pra eles refletirem o que está filtrado) ---
+        col_f1, col_f2, col_f3, col_f4 = st.columns([1, 1, 1, 2])
+        with col_f1:
+            opcoes_cliente = sorted(df_protocolos["Cliente"].unique()) if "Cliente" in df_protocolos.columns else []
+            filtro_cliente = st.multiselect("Cliente:", opcoes_cliente, default=opcoes_cliente)
+        with col_f2:
+            filtro_situacao = st.selectbox("Situação:", ["Todas", "Em aberto", "Finalizadas"])
+        with col_f3:
+            opcoes_tipo = sorted(df_protocolos["Tipo"].unique()) if "Tipo" in df_protocolos.columns else []
+            filtro_tipo = st.multiselect("Tipo:", opcoes_tipo, default=opcoes_tipo)
+        with col_f4:
+            busca = st.text_input("Buscar (nº, endereço, tipo...):", "")
+
+        df_filtrado = df_protocolos
+        if "Cliente" in df_filtrado.columns:
+            df_filtrado = df_filtrado[df_filtrado["Cliente"].isin(filtro_cliente)]
+        if "Tipo" in df_filtrado.columns:
+            df_filtrado = df_filtrado[df_filtrado["Tipo"].isin(filtro_tipo)]
+        if filtro_situacao == "Em aberto":
+            df_filtrado = df_filtrado[df_filtrado["Situacao"] != "Finalizada"]
+        elif filtro_situacao == "Finalizadas":
+            df_filtrado = df_filtrado[df_filtrado["Situacao"] == "Finalizada"]
+        if busca:
+            mascara = df_filtrado.apply(lambda linha: busca.lower() in " ".join(linha.astype(str)).lower(), axis=1)
+            df_filtrado = df_filtrado[mascara]
+        df_filtrado = df_filtrado.copy()
+
+        # --- Colunas derivadas (canal e qtd. de prorrogações), sobre o filtro atual ---
+        if "Tipo" in df_filtrado.columns:
+            df_filtrado["Canal"] = df_filtrado["Tipo"].astype(str).apply(
+                lambda t: "Ouvidoria" if "ouvidoria" in t.lower() else "Coelba"
+            )
+        if "Hist. Prazo" in df_filtrado.columns:
+            df_filtrado["Qtd Prorrogações"] = df_filtrado["Hist. Prazo"].apply(
+                lambda h: len([l for l in str(h or "").split("\n") if l.strip()])
+            )
+
+        # --- Indicadores (refletem os filtros acima, não o total geral da planilha) ---
+        situacao_col = df_filtrado["Situacao"] if "Situacao" in df_filtrado.columns else pd.Series(dtype=str)
+        dias_col = df_filtrado["Dias p/ prazo"] if "Dias p/ prazo" in df_filtrado.columns else pd.Series(dtype=float)
+
+        total = len(df_filtrado)
         finalizados = int((situacao_col == "Finalizada").sum())
         abertos = total - finalizados
         vencendo = int(((dias_col <= 3) & (dias_col >= 0)).sum())
@@ -355,29 +397,82 @@ elif "Acompanhar Protocolos" in modulo_selecionado:
         col_c.metric("Vencendo (≤3 dias)", vencendo)
         col_d.metric("Vencidos", vencidos)
 
-        col_f1, col_f2, col_f3 = st.columns([1, 1, 2])
-        with col_f1:
-            opcoes_cliente = sorted(df_protocolos["Cliente"].unique()) if "Cliente" in df_protocolos.columns else []
-            filtro_cliente = st.multiselect("Cliente:", opcoes_cliente, default=opcoes_cliente)
-        with col_f2:
-            filtro_situacao = st.selectbox("Situação:", ["Todas", "Em aberto", "Finalizadas"])
-        with col_f3:
-            busca = st.text_input("Buscar (nº, endereço, tipo...):", "")
+        qtd_coelba = int((df_filtrado["Canal"] == "Coelba").sum()) if "Canal" in df_filtrado.columns else 0
+        qtd_ouvidoria = int((df_filtrado["Canal"] == "Ouvidoria").sum()) if "Canal" in df_filtrado.columns else 0
+        qtd_prorrogacao_excessiva = (
+            int((df_filtrado["Qtd Prorrogações"] > 4).sum()) if "Qtd Prorrogações" in df_filtrado.columns else 0
+        )
+        col_e, col_f, col_g = st.columns(3)
+        col_e.metric("Canal Coelba", qtd_coelba)
+        col_f.metric("Canal Ouvidoria", qtd_ouvidoria)
+        col_g.metric("Com +4 prorrogações ⚠️", qtd_prorrogacao_excessiva)
 
-        df_filtrado = df_protocolos
-        if "Cliente" in df_filtrado.columns:
-            df_filtrado = df_filtrado[df_filtrado["Cliente"].isin(filtro_cliente)]
-        if filtro_situacao == "Em aberto":
-            df_filtrado = df_filtrado[df_filtrado["Situacao"] != "Finalizada"]
-        elif filtro_situacao == "Finalizadas":
-            df_filtrado = df_filtrado[df_filtrado["Situacao"] == "Finalizada"]
-        if busca:
-            mascara = df_filtrado.apply(lambda linha: busca.lower() in " ".join(linha.astype(str)).lower(), axis=1)
-            df_filtrado = df_filtrado[mascara]
+        if "Tipo" in df_filtrado.columns and total > 0:
+            with st.expander("📊 Protocolos por tipo"):
+                st.dataframe(
+                    df_filtrado["Tipo"].value_counts().rename_axis("Tipo").reset_index(name="Quantidade"),
+                    use_container_width=True, hide_index=True,
+                )
+
+        # --- O que mudou recentemente (últimas 48h, olhando a planilha toda, não só o filtro) ---
+        agora = datetime.now()
+
+        def _recente(valor, horas=48):
+            if not valor:
+                return False
+            for fmt in ("%d/%m/%Y %H:%M", "%d/%m/%Y"):
+                try:
+                    return (agora - datetime.strptime(str(valor).strip(), fmt)) <= timedelta(hours=horas)
+                except ValueError:
+                    continue
+            return False
+
+        def _ultima_data_hist_prazo(hist):
+            linhas = [l for l in str(hist or "").split("\n") if l.strip()]
+            if not linhas:
+                return None
+            m = re.match(r"\[(\d{2}/\d{2}/\d{4} \d{2}:\d{2})\]", linhas[-1])
+            return m.group(1) if m else None
+
+        novas_recentes = (
+            df_protocolos[df_protocolos["Descoberto em"].apply(_recente)]
+            if "Descoberto em" in df_protocolos.columns else pd.DataFrame()
+        )
+        finalizadas_recentes = (
+            df_protocolos[(df_protocolos["Situacao"] == "Finalizada") & df_protocolos["Ultima Atualizacao"].apply(_recente)]
+            if {"Situacao", "Ultima Atualizacao"}.issubset(df_protocolos.columns) else pd.DataFrame()
+        )
+        prazo_alterado_recente = (
+            df_protocolos[df_protocolos["Hist. Prazo"].apply(lambda h: _recente(_ultima_data_hist_prazo(h)))]
+            if "Hist. Prazo" in df_protocolos.columns else pd.DataFrame()
+        )
+
+        total_mudancas = len(novas_recentes) + len(finalizadas_recentes) + len(prazo_alterado_recente)
+        if total_mudancas:
+            with st.expander(f"🔔 O que mudou nas últimas 48h ({total_mudancas})", expanded=True):
+                if len(novas_recentes):
+                    st.markdown(f"**{len(novas_recentes)} nova(s) solicitação(ões):**")
+                    cols = [c for c in ["Cliente", "No da Solicitacao", "Tipo", "Situacao"] if c in novas_recentes.columns]
+                    st.dataframe(novas_recentes[cols], use_container_width=True, hide_index=True)
+                if len(prazo_alterado_recente):
+                    st.markdown(f"**{len(prazo_alterado_recente)} com prazo alterado:**")
+                    cols = [c for c in ["Cliente", "No da Solicitacao", "Tipo", "Prazo"] if c in prazo_alterado_recente.columns]
+                    st.dataframe(prazo_alterado_recente[cols], use_container_width=True, hide_index=True)
+                if len(finalizadas_recentes):
+                    st.markdown(f"**{len(finalizadas_recentes)} finalizada(s):**")
+                    cols = [c for c in ["Cliente", "No da Solicitacao", "Tipo", "Resultado"] if c in finalizadas_recentes.columns]
+                    st.dataframe(finalizadas_recentes[cols], use_container_width=True, hide_index=True)
+
+        # --- Ordenação: abertos primeiro (mais urgente primeiro), finalizados por último ---
+        if "Situacao" in df_filtrado.columns:
+            df_filtrado["_ordem_situacao"] = (df_filtrado["Situacao"] == "Finalizada").astype(int)
+            by = ["_ordem_situacao"] + (["Dias p/ prazo"] if "Dias p/ prazo" in df_filtrado.columns else [])
+            df_filtrado = df_filtrado.sort_values(by=by, na_position="last").drop(columns=["_ordem_situacao"])
 
         colunas_exibir = [
-            "Cliente", "No da Solicitacao", "Tipo", "Descricao", "Situacao", "Prazo",
-            "Dias p/ prazo", "Resultado", "Endereco", "NUC (UC real)", "Situacao interna", "Observacoes internas",
+            "Cliente", "Razao Social", "No da Solicitacao", "Tipo", "Canal", "Descricao", "Situacao", "Prazo",
+            "Dias p/ prazo", "Qtd Prorrogações", "Resultado", "Endereco", "NUC (UC real)",
+            "Responsavel", "Situacao interna", "Observacoes internas",
         ]
         colunas_exibir = [c for c in colunas_exibir if c in df_filtrado.columns]
 
@@ -397,10 +492,14 @@ elif "Acompanhar Protocolos" in modulo_selecionado:
                 return "background-color: #FEEFC3; color: #6B3F05"
             return ""
 
+        def cor_prorrogacao(valor):
+            return "background-color: #F4C7C3; color: #8C1D18" if valor > 4 else ""
+
         # st.dataframe com Styler não respeita Styler.format() pra exibição (só
         # usa .map pra cor) — por isso convertemos o texto ANTES, separado do
         # cálculo de cor, que continua baseado no valor numérico original.
         dias_numericos = df_filtrado["Dias p/ prazo"] if "Dias p/ prazo" in colunas_exibir else None
+        prorrogacoes_numericas = df_filtrado["Qtd Prorrogações"] if "Qtd Prorrogações" in colunas_exibir else None
         df_exibicao = df_filtrado[colunas_exibir].copy()
         if dias_numericos is not None:
             df_exibicao["Dias p/ prazo"] = dias_numericos.apply(lambda v: "" if pd.isna(v) else f"{int(v)} d")
@@ -411,9 +510,11 @@ elif "Acompanhar Protocolos" in modulo_selecionado:
         if dias_numericos is not None:
             cores_prazo = dias_numericos.apply(cor_prazo)
             estilo = estilo.apply(lambda _: cores_prazo, subset=["Dias p/ prazo"])
+        if prorrogacoes_numericas is not None:
+            estilo = estilo.map(cor_prorrogacao, subset=["Qtd Prorrogações"])
 
         st.dataframe(estilo, use_container_width=True, height=450, hide_index=True)
-        st.caption(f"Mostrando {len(df_filtrado)} de {total} protocolo(s).")
+        st.caption(f"Mostrando {len(df_filtrado)} de {total_geral} protocolo(s).")
     else:
         st.info("Nenhum protocolo na planilha ainda. Rode a consulta abaixo pra começar a popular.")
 
