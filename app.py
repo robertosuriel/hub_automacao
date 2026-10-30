@@ -504,67 +504,6 @@ elif "Acompanhar Protocolos" in modulo_selecionado:
                 unsafe_allow_html=True,
             )
 
-        if "Tipo" in df_filtrado.columns and total > 0:
-            contagem_tipo = df_filtrado["Tipo"].value_counts().rename_axis("Tipo").reset_index(name="Quantidade")
-            with st.expander(f"📊 Protocolos por tipo ({len(contagem_tipo)})"):
-                st.dataframe(
-                    contagem_tipo, use_container_width=True, hide_index=True,
-                    column_config={
-                        "Quantidade": st.column_config.ProgressColumn(
-                            "Quantidade", min_value=0, max_value=int(contagem_tipo["Quantidade"].max()), format="%d",
-                        ),
-                    },
-                )
-
-        # --- O que mudou recentemente (últimas 48h, olhando a planilha toda, não só o filtro) ---
-        agora = datetime.now()
-
-        def _recente(valor, horas=48):
-            if not valor:
-                return False
-            for fmt in ("%d/%m/%Y %H:%M", "%d/%m/%Y"):
-                try:
-                    return (agora - datetime.strptime(str(valor).strip(), fmt)) <= timedelta(hours=horas)
-                except ValueError:
-                    continue
-            return False
-
-        def _ultima_data_hist_prazo(hist):
-            linhas = [l for l in str(hist or "").split("\n") if l.strip()]
-            if not linhas:
-                return None
-            m = re.match(r"\[(\d{2}/\d{2}/\d{4} \d{2}:\d{2})\]", linhas[-1])
-            return m.group(1) if m else None
-
-        novas_recentes = (
-            df_protocolos[df_protocolos["Descoberto em"].apply(_recente)]
-            if "Descoberto em" in df_protocolos.columns else pd.DataFrame()
-        )
-        finalizadas_recentes = (
-            df_protocolos[(df_protocolos["Situacao"] == "Finalizada") & df_protocolos["Ultima Atualizacao"].apply(_recente)]
-            if {"Situacao", "Ultima Atualizacao"}.issubset(df_protocolos.columns) else pd.DataFrame()
-        )
-        prazo_alterado_recente = (
-            df_protocolos[df_protocolos["Hist. Prazo"].apply(lambda h: _recente(_ultima_data_hist_prazo(h)))]
-            if "Hist. Prazo" in df_protocolos.columns else pd.DataFrame()
-        )
-
-        total_mudancas = len(novas_recentes) + len(finalizadas_recentes) + len(prazo_alterado_recente)
-        if total_mudancas:
-            with st.expander(f"🔔 O que mudou nas últimas 48h ({total_mudancas})", expanded=True):
-                if len(novas_recentes):
-                    st.markdown(f"**{len(novas_recentes)} nova(s) solicitação(ões):**")
-                    cols = [c for c in ["Cliente", "No da Solicitacao", "Tipo", "Situacao"] if c in novas_recentes.columns]
-                    st.dataframe(novas_recentes[cols], use_container_width=True, hide_index=True)
-                if len(prazo_alterado_recente):
-                    st.markdown(f"**{len(prazo_alterado_recente)} com prazo alterado:**")
-                    cols = [c for c in ["Cliente", "No da Solicitacao", "Tipo", "Prazo"] if c in prazo_alterado_recente.columns]
-                    st.dataframe(prazo_alterado_recente[cols], use_container_width=True, hide_index=True)
-                if len(finalizadas_recentes):
-                    st.markdown(f"**{len(finalizadas_recentes)} finalizada(s):**")
-                    cols = [c for c in ["Cliente", "No da Solicitacao", "Tipo", "Resultado"] if c in finalizadas_recentes.columns]
-                    st.dataframe(finalizadas_recentes[cols], use_container_width=True, hide_index=True)
-
         # --- Ordenação: abertos primeiro (mais urgente primeiro), finalizados por último ---
         if "Situacao" in df_filtrado.columns:
             df_filtrado["_ordem_situacao"] = (df_filtrado["Situacao"] == "Finalizada").astype(int)
@@ -617,6 +556,68 @@ elif "Acompanhar Protocolos" in modulo_selecionado:
 
         st.dataframe(estilo, use_container_width=True, height=450, hide_index=True)
         st.caption(f"Mostrando {len(df_filtrado)} de {total_geral} protocolo(s).")
+
+        if "Tipo" in df_filtrado.columns and total > 0:
+            contagem_tipo = df_filtrado["Tipo"].value_counts().rename_axis("Tipo").reset_index(name="Quantidade")
+            with st.expander(f"📊 Protocolos por tipo ({len(contagem_tipo)})"):
+                st.dataframe(
+                    contagem_tipo, use_container_width=True, hide_index=True,
+                    column_config={
+                        "Quantidade": st.column_config.ProgressColumn(
+                            "Quantidade", min_value=0, max_value=int(contagem_tipo["Quantidade"].max()), format="%d",
+                        ),
+                    },
+                )
+
+        # --- O que mudou recentemente (últimas 48h, olhando a planilha toda, não só o filtro) ---
+        agora = datetime.now()
+
+        def _recente(valor, horas=48):
+            if not valor:
+                return False
+            for fmt in ("%d/%m/%Y %H:%M", "%d/%m/%Y"):
+                try:
+                    return (agora - datetime.strptime(str(valor).strip(), fmt)) <= timedelta(hours=horas)
+                except ValueError:
+                    continue
+            return False
+
+        def _ultima_data_hist_prazo(hist):
+            linhas = [l for l in str(hist or "").split("\n") if l.strip()]
+            if not linhas:
+                return None
+            m = re.match(r"\[(\d{2}/\d{2}/\d{4} \d{2}:\d{2})\]", linhas[-1])
+            return m.group(1) if m else None
+
+        novas_recentes = (
+            df_protocolos[df_protocolos["Descoberto em"].apply(_recente)]
+            if "Descoberto em" in df_protocolos.columns else pd.DataFrame()
+        )
+        finalizadas_recentes = (
+            df_protocolos[(df_protocolos["Situacao"] == "Finalizada") & df_protocolos["Ultima Atualizacao"].apply(_recente)]
+            if {"Situacao", "Ultima Atualizacao"}.issubset(df_protocolos.columns) else pd.DataFrame()
+        )
+        prazo_alterado_recente = (
+            df_protocolos[df_protocolos["Hist. Prazo"].apply(lambda h: _recente(_ultima_data_hist_prazo(h)))]
+            if "Hist. Prazo" in df_protocolos.columns else pd.DataFrame()
+        )
+
+        total_mudancas = len(novas_recentes) + len(finalizadas_recentes) + len(prazo_alterado_recente)
+        if total_mudancas:
+            with st.expander(f"🔔 O que mudou nas últimas 48h ({total_mudancas})"):
+                st.caption("Com base em 'Descoberto em', 'Última Atualização' e 'Hist. Prazo' — veja todos nas últimas 48h a partir de agora, não desde a última vez que alguém abriu esse painel.")
+                if len(novas_recentes):
+                    st.markdown(f"**{len(novas_recentes)} nova(s) solicitação(ões):**")
+                    cols = [c for c in ["Cliente", "No da Solicitacao", "Tipo", "Situacao"] if c in novas_recentes.columns]
+                    st.dataframe(novas_recentes[cols], use_container_width=True, hide_index=True)
+                if len(prazo_alterado_recente):
+                    st.markdown(f"**{len(prazo_alterado_recente)} com prazo alterado:**")
+                    cols = [c for c in ["Cliente", "No da Solicitacao", "Tipo", "Prazo"] if c in prazo_alterado_recente.columns]
+                    st.dataframe(prazo_alterado_recente[cols], use_container_width=True, hide_index=True)
+                if len(finalizadas_recentes):
+                    st.markdown(f"**{len(finalizadas_recentes)} finalizada(s):**")
+                    cols = [c for c in ["Cliente", "No da Solicitacao", "Tipo", "Resultado"] if c in finalizadas_recentes.columns]
+                    st.dataframe(finalizadas_recentes[cols], use_container_width=True, hide_index=True)
     else:
         st.info("Nenhum protocolo na planilha ainda. Rode a consulta abaixo pra começar a popular.")
 
