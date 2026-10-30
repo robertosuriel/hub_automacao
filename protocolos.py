@@ -436,6 +436,53 @@ def _estilizar_aba(aba, total_linhas, congelar_colunas=4):
         print(f"  ⚠️ Não consegui estilizar a aba '{aba.title}': {e}")
 
 
+def _estilizar_aba_simples(planilha, aba, qtd_colunas, total_linhas, largura_colunas=180):
+    """Formatação básica (cabeçalho, zebra, bordas, filtro, largura) pra abas
+    auxiliares que não seguem o layout da 'Protocolos' (ex: UCs de-para)."""
+    try:
+        sheet_id = aba.id
+        fim = max(total_linhas, 2)
+        requests_batch = []
+        meta = planilha.fetch_sheet_metadata()
+        for sheet in meta.get("sheets", []):
+            if sheet.get("properties", {}).get("sheetId") == sheet_id:
+                for banda in sheet.get("bandedRanges", []):
+                    requests_batch.append({"deleteBanding": {"bandedRangeId": banda["bandedRangeId"]}})
+                break
+        requests_batch += [
+            {"updateSheetProperties": {
+                "properties": {"sheetId": sheet_id, "gridProperties": {"frozenRowCount": 1, "frozenColumnCount": 1}},
+                "fields": "gridProperties.frozenRowCount,gridProperties.frozenColumnCount",
+            }},
+            {"repeatCell": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1, "startColumnIndex": 0, "endColumnIndex": qtd_colunas},
+                "cell": {"userEnteredFormat": {
+                    "backgroundColor": COR_HEADER,
+                    "textFormat": {"bold": True, "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
+                    "verticalAlignment": "MIDDLE",
+                }},
+                "fields": "userEnteredFormat(backgroundColor,textFormat,verticalAlignment)",
+            }},
+            {"addBanding": {"bandedRange": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": fim, "startColumnIndex": 0, "endColumnIndex": qtd_colunas},
+                "rowProperties": {"firstBandColor": {"red": 1, "green": 1, "blue": 1}, "secondBandColor": COR_BANDA_PAR},
+            }}},
+            {"setBasicFilter": {"filter": {"range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": fim, "startColumnIndex": 0, "endColumnIndex": qtd_colunas}}}},
+            {"updateBorders": {
+                "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": fim, "startColumnIndex": 0, "endColumnIndex": qtd_colunas},
+                "top": COR_BORDA, "bottom": COR_BORDA, "left": COR_BORDA, "right": COR_BORDA,
+                "innerHorizontal": COR_BORDA, "innerVertical": COR_BORDA,
+            }},
+            {"updateDimensionProperties": {
+                "range": {"sheetId": sheet_id, "dimension": "COLUMNS", "startIndex": 0, "endIndex": qtd_colunas},
+                "properties": {"pixelSize": largura_colunas}, "fields": "pixelSize",
+            }},
+        ]
+        planilha.batch_update({"requests": requests_batch})
+    except Exception as e:
+        print(f"  ⚠️ Não consegui estilizar a aba '{aba.title}': {e}")
+
+
 def atualizar_aba_ucs_depara(planilha, cliente, ucs):
     """Escreve/atualiza, na aba 'UCs (de-para)', a lista de UCs desse cliente
     (código, NUC, razão social, endereço) vinda da API. Serve pra conferência
@@ -467,6 +514,8 @@ def atualizar_aba_ucs_depara(planilha, cliente, ucs):
         aba.batch_clear([f"A2:{_coluna_letra(len(CABECALHO_UCS_DEPARA) - 1)}{total_linhas_atuais}"])
     if todas_linhas:
         aba.update(range_name="A2", values=todas_linhas, value_input_option="RAW")
+
+    _estilizar_aba_simples(planilha, aba, len(CABECALHO_UCS_DEPARA), len(todas_linhas) + 1)
 
 
 def obter_ou_criar_aba_cliente(planilha, cliente, cabecalho):
