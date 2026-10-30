@@ -318,12 +318,16 @@ def _abrir_aba_protocolos():
     return planilha.worksheet(ABA_PROTOCOLOS)
 
 
+RESPONSAVEIS = ["-", "Leticia", "Mariane", "Monalisa", "Andressa"]
+
+
 def aplicar_validacao_controle(aba, linha_inicio, linha_fim):
-    """Checkbox (Resolvido, col S) e dropdown (Situacao interna, col T) só nas
-    linhas indicadas. NUNCA aplicar isso adiantado em linhas sem dado — o
-    Sheets grava 'FALSE' de verdade em célula de checkbox vazia, e isso já
-    confundiu a detecção de fim de tabela do Sheets uma vez (linhas novas
-    caindo centenas de linhas abaixo do esperado)."""
+    """Checkbox (Resolvido, col S), dropdown (Situacao interna, col T) e
+    dropdown (Responsavel, col Z) só nas linhas indicadas. NUNCA aplicar isso
+    adiantado em linhas sem dado — o Sheets grava 'FALSE' de verdade em
+    célula de checkbox vazia, e isso já confundiu a detecção de fim de
+    tabela do Sheets uma vez (linhas novas caindo centenas de linhas abaixo
+    do esperado)."""
     try:
         client = autenticar_google_sheets()
         planilha = client.open_by_key(PROTOCOLOS_SPREADSHEET_ID)
@@ -349,6 +353,19 @@ def aplicar_validacao_controle(aba, linha_inicio, linha_fim):
                                 {"userEnteredValue": "Escalar p/ ANEEL"},
                                 {"userEnteredValue": "Resolvido"},
                             ],
+                        },
+                        "showCustomUi": True,
+                        "strict": True,
+                    },
+                }
+            },
+            {
+                "setDataValidation": {
+                    "range": {"sheetId": sheet_id, "startRowIndex": linha_inicio - 1, "endRowIndex": linha_fim, "startColumnIndex": COLUNA_RESPONSAVEL, "endColumnIndex": COLUNA_RESPONSAVEL + 1},
+                    "rule": {
+                        "condition": {
+                            "type": "ONE_OF_LIST",
+                            "values": [{"userEnteredValue": nome} for nome in RESPONSAVEIS],
                         },
                         "showCustomUi": True,
                         "strict": True,
