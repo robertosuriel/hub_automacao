@@ -408,7 +408,12 @@ def _estilizar_aba(aba, total_linhas, congelar_colunas=4):
             }},
             {"addBanding": {"bandedRange": {
                 "range": {"sheetId": sheet_id, "startRowIndex": 1, "endRowIndex": fim, "startColumnIndex": 0, "endColumnIndex": TOTAL_COLUNAS},
-                "rowProperties": {"headerColor": COR_HEADER, "firstBandColor": {"red": 1, "green": 1, "blue": 1}, "secondBandColor": COR_BANDA_PAR},
+                # SEM headerColor de propósito: esse range já começa na 1a linha
+                # de DADOS (não tem o cabeçalho real dentro dele), mas o Sheets
+                # trata a 1a linha de qualquer banded range com headerColor como
+                # "linha de cabeçalho" e pinta ela por cima do zebrado — isso
+                # pintava a linha 2 (1a linha de dados) igual ao cabeçalho real.
+                "rowProperties": {"firstBandColor": {"red": 1, "green": 1, "blue": 1}, "secondBandColor": COR_BANDA_PAR},
             }}},
             {"setBasicFilter": {"filter": {
                 "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": fim, "startColumnIndex": 0, "endColumnIndex": TOTAL_COLUNAS},
@@ -953,6 +958,7 @@ def backfillar_colunas_derivadas():
 
     valores = aba.get_all_values()
     updates = []
+    clientes_afetados = set()
     for i, linha in enumerate(valores[1:], start=2):
         cliente = linha[0].strip() if linha else ""
         ucs_cliente = ucs_por_cliente.get(cliente)
@@ -966,14 +972,26 @@ def backfillar_colunas_derivadas():
             nuc = identificar_uc_por_endereco(endereco, ucs_cliente)
             if nuc:
                 updates.append({"range": f"X{i}", "values": [[nuc]]})
+                clientes_afetados.add(cliente)
 
         nome_cliente = ucs_cliente[0].get("nome_cliente", "")
         if not razao_atual and nome_cliente:
             updates.append({"range": f"Y{i}", "values": [[nome_cliente]]})
+            clientes_afetados.add(cliente)
 
     if updates:
         aba.batch_update(updates, value_input_option="USER_ENTERED")
-    print(f"  ✅ Backfill concluído: {len(updates)} célula(s) preenchida(s).")
+
+    # As abas por cliente são cópias estáticas da "Protocolos" — sem
+    # regenerá-las aqui, o backfill fica invisível pra equipe (que só olha
+    # a aba do próprio cliente, não a "Protocolos" inteira).
+    for cliente in sorted(clientes_afetados):
+        try:
+            regenerar_aba_cliente(aba, planilha, cliente.lower())
+        except Exception as e:
+            print(f"  ⚠️ Não consegui regenerar a aba de {cliente}: {e}")
+
+    print(f"  ✅ Backfill concluído: {len(updates)} célula(s) preenchida(s) em {len(clientes_afetados)} cliente(s).")
     return len(updates)
 
 
