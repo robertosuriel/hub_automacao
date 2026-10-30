@@ -324,6 +324,54 @@ elif "Acompanhar Protocolos" in modulo_selecionado:
         "Consumidora e atualiza a planilha de Protocolos. Quando uma solicitação vira "
         "**Finalizada**, marca o alerta na planilha e tenta enviar um e-mail automático."
     )
+
+    if st.button("▶️ Iniciar Consulta de Protocolos", type="primary", use_container_width=True):
+        if not clientes_selecionados:
+            st.warning("⚠️ Selecione pelo menos um cliente para continuar.")
+        else:
+            st.info(f"Iniciando consulta de protocolos para: {', '.join(clientes_selecionados)}")
+
+            texto_status = st.empty()
+            caixa_log = st.empty()
+
+            old_stdout = sys.stdout
+            sys.stdout = StreamlitRedirect(caixa_log)
+
+            clientes_login = {}
+            resultados_protocolos = {}
+            try:
+                for cliente in clientes_selecionados:
+                    try:
+                        login_user = str(st.secrets[f"{cliente.upper()}_LOGIN_USER"])
+                        login_password = str(st.secrets[f"{cliente.upper()}_LOGIN_PASSWORD"])
+                        clientes_login[cliente] = (login_user, login_password)
+                    except KeyError:
+                        resultados_protocolos[cliente.upper()] = "❌ Falha (Dados faltando no Cofre/Secrets)"
+
+                with st.spinner("O robô está consultando as solicitações na Coelba..."):
+                    resultados_protocolos.update(processar_protocolos(clientes_login))
+            finally:
+                sys.stdout = old_stdout
+
+            texto_status.success("🎉 Consulta de Protocolos concluída!")
+
+            st.subheader("📊 Relatório de Execução - Protocolos")
+            for cli, status in resultados_protocolos.items():
+                if "✅" in status:
+                    st.success(f"**{cli}**: {status}")
+                else:
+                    st.error(f"**{cli}**: {status}")
+
+                for img_name in [
+                    f"erro_sem_token_protocolo_{cli.lower()}.png",
+                    f"erro_botao_protocolo_{cli.lower()}.png",
+                    f"erro_fatal_protocolo_{cli.lower()}.png",
+                ]:
+                    if os.path.exists(img_name):
+                        st.error(f"📸 O robô travou nesta tela (Conta {cli}):")
+                        st.image(img_name)
+    st.divider()
+
     st.link_button(
         "📄 Abrir planilha de Protocolos",
         "https://docs.google.com/spreadsheets/d/1_tGDCBzQ_7Swwf4XKfWsU1mv0XHNRlB3jEZYpLaN-yk/edit",
@@ -619,53 +667,4 @@ elif "Acompanhar Protocolos" in modulo_selecionado:
                     cols = [c for c in ["Cliente", "No da Solicitacao", "Tipo", "Resultado"] if c in finalizadas_recentes.columns]
                     st.dataframe(finalizadas_recentes[cols], use_container_width=True, hide_index=True)
     else:
-        st.info("Nenhum protocolo na planilha ainda. Rode a consulta abaixo pra começar a popular.")
-
-    st.divider()
-
-    if st.button("▶️ Iniciar Consulta de Protocolos", type="primary", use_container_width=True):
-        if not clientes_selecionados:
-            st.warning("⚠️ Selecione pelo menos um cliente para continuar.")
-        else:
-            st.info(f"Iniciando consulta de protocolos para: {', '.join(clientes_selecionados)}")
-
-            texto_status = st.empty()
-            caixa_log = st.empty()
-
-            old_stdout = sys.stdout
-            sys.stdout = StreamlitRedirect(caixa_log)
-
-            clientes_login = {}
-            resultados_protocolos = {}
-            try:
-                for cliente in clientes_selecionados:
-                    try:
-                        login_user = str(st.secrets[f"{cliente.upper()}_LOGIN_USER"])
-                        login_password = str(st.secrets[f"{cliente.upper()}_LOGIN_PASSWORD"])
-                        clientes_login[cliente] = (login_user, login_password)
-                    except KeyError:
-                        resultados_protocolos[cliente.upper()] = "❌ Falha (Dados faltando no Cofre/Secrets)"
-
-                with st.spinner("O robô está consultando as solicitações na Coelba..."):
-                    resultados_protocolos.update(processar_protocolos(clientes_login))
-            finally:
-                sys.stdout = old_stdout
-
-            texto_status.success("🎉 Consulta de Protocolos concluída!")
-
-            st.divider()
-            st.subheader("📊 Relatório de Execução - Protocolos")
-            for cli, status in resultados_protocolos.items():
-                if "✅" in status:
-                    st.success(f"**{cli}**: {status}")
-                else:
-                    st.error(f"**{cli}**: {status}")
-
-                for img_name in [
-                    f"erro_sem_token_protocolo_{cli.lower()}.png",
-                    f"erro_botao_protocolo_{cli.lower()}.png",
-                    f"erro_fatal_protocolo_{cli.lower()}.png",
-                ]:
-                    if os.path.exists(img_name):
-                        st.error(f"📸 O robô travou nesta tela (Conta {cli}):")
-                        st.image(img_name)
+        st.info("Nenhum protocolo na planilha ainda. Rode a consulta acima pra começar a popular.")
