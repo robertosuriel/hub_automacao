@@ -559,9 +559,9 @@ elif "Acompanhar Protocolos" in modulo_selecionado:
             df_filtrado = df_filtrado.sort_values(by=by, na_position="last").drop(columns=["_ordem_situacao"])
 
         colunas_exibir = [
-            "Cliente", "Razao Social", "No da Solicitacao", "Tipo", "Canal", "Descricao", "Situacao", "Prazo",
-            "Dias p/ prazo", "Qtd Prorrogações", "Resultado", "Endereco", "NUC (UC real)",
-            "Responsavel", "Situacao interna", "Observacoes internas",
+            "Cliente", "Razao Social", "Alerta", "No da Solicitacao", "Tipo", "Canal", "Descricao",
+            "Descricao Interna", "Situacao", "Prazo", "Dias p/ prazo", "Qtd Prorrogações", "Resultado",
+            "Endereco", "NUC (UC real)", "NUC Geradora", "Responsavel", "Situacao interna", "Observacoes internas",
         ]
         colunas_exibir = [c for c in colunas_exibir if c in df_filtrado.columns]
 
@@ -584,6 +584,9 @@ elif "Acompanhar Protocolos" in modulo_selecionado:
         def cor_prorrogacao(valor):
             return "background-color: #F4C7C3; color: #8C1D18" if valor > 4 else ""
 
+        def cor_alerta(valor):
+            return "background-color: #FEEFC3; color: #6B3F05; font-weight: 600" if valor and str(valor).strip() else ""
+
         # st.dataframe com Styler não respeita Styler.format() pra exibição (só
         # usa .map pra cor) — por isso convertemos o texto ANTES, separado do
         # cálculo de cor, que continua baseado no valor numérico original.
@@ -601,6 +604,8 @@ elif "Acompanhar Protocolos" in modulo_selecionado:
             estilo = estilo.apply(lambda _: cores_prazo, subset=["Dias p/ prazo"])
         if prorrogacoes_numericas is not None:
             estilo = estilo.map(cor_prorrogacao, subset=["Qtd Prorrogações"])
+        if "Alerta" in colunas_exibir:
+            estilo = estilo.map(cor_alerta, subset=["Alerta"])
 
         st.dataframe(estilo, use_container_width=True, height=450, hide_index=True)
         st.caption(f"Mostrando {len(df_filtrado)} de {total_geral} protocolo(s).")

@@ -14,7 +14,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-from extrator import configurar_driver, realizar_login_selenium_original, autenticar_google_sheets
+from extrator import configurar_driver, realizar_login_selenium_original, autenticar_google_sheets, SPREADSHEET_ID as CONTROLE_SPREADSHEET_ID
 
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -37,52 +37,98 @@ ABA_PROTOCOLOS = "Protocolos"
 ABA_UCS_DEPARA = "UCs (de-para)"
 CABECALHO_UCS_DEPARA = ["Cliente", "Codigo Cliente", "NUC", "Razao Social", "Endereco", "Bairro", "Municipio"]
 
-# Colunas da aba "Protocolos" (nessa ordem, A..Z):
-# Cliente | CNPJ | UC (referencia) | No da Solicitacao | Tipo | Descricao |
-# Data da Solicitacao | Situacao | Prazo | Ultima Atualizacao | Alerta Enviado |
-# Descoberto em | Observacoes | Resultado | Historico | Endereco |
-# Instancia | Protocolo origem | Resolvido | Situacao interna | Observacoes internas |
-# Dias p/ prazo | Historico Prazo | NUC (UC real) | Razao Social | Responsavel
-#
-# IMPORTANTE sobre a coluna "UC (referencia)": o pedidos-header NAO e por UC
-# (confirmado: a mesma lista de ate 30 solicitacoes recentes volta
-# independente de qual UC valida da conta voce passa). Entao essa coluna guarda
-# so a UC usada na chamada, nao necessariamente a UC "dona" da solicitacao.
-# O campo confiavel pra identificar o imovel e o Endereco (coluna P), usado
-# pra achar a UC real na coluna X (ver identificar_uc_por_endereco).
+# Abas da planilha de controle (mesma usada pelo módulo de Faturas) com o
+# de-para de usina geradora. "clienteContato" liga cada UC beneficiária (via
+# código do cliente) ao nome da usina que gera a energia dela; "unidadesGeradoras"
+# liga o nome da usina ao código do cliente DA USINA (que é, ela mesma, uma UC
+# da conta na Coelba). Ver carregar_mapa_geradoras / identificar_geradora.
+ABA_CLIENTE_CONTATO = "clienteContato"
+ABA_UNIDADES_GERADORAS = "unidadesGeradoras"
 
-# Colunas manuais (editadas pela equipe nas abas por cliente). O robo le essas
-# colunas ANTES de sobrescrever a aba do cliente, pra nao perder edicao. Nem
-# toda coluna manual e contigua (Responsavel foi adicionada depois, no fim).
-# Coluna W (0-indexed 22): Historico Prazo — preenchida automaticamente pelo robo
-# quando o prazo muda (formato: "[data] Prazo: antigo → novo").
-# Coluna X (0-indexed 23): NUC (UC real) — Numero da Unidade Consumidora
-# (formato Coelba, ex: "6.320.126.028-03") identificado batendo o Endereco
-# (coluna P) contra a lista de UCs da conta. Fica em branco quando nao bate
-# com nenhuma UC ou bate com mais de uma (ambiguo) — ver
-# identificar_uc_por_endereco.
-# Coluna Y (0-indexed 24): Razao Social — nome completo do cliente, vindo da
-# mesma API de UCs (campo nomeCliente).
-# Coluna Z (0-indexed 25): Responsavel — texto livre, manual, mesma logica das
-# outras colunas manuais (Instancia, Protocolo origem etc).
+# --- Colunas da aba "Protocolos" (nessa ordem, A..AH — 34 colunas) ---
+# Definidas pela equipe (Leticia/Mariane/Monalisa/Andressa) numa aba "RASCUNHO"
+# depois de alinhar o que precisava aparecer. Index 0-based.
+COLUNA_CLIENTE = 0
+COLUNA_RESPONSAVEL = 1                  # MANUAL (dropdown — ver RESPONSAVEIS)
+COLUNA_RAZAO_SOCIAL = 2
+COLUNA_CNPJ = 3
+COLUNA_COD_GERADORA = 4
+COLUNA_NUC_GERADORA = 5
+COLUNA_ENDERECO_GERADORA = 6
+COLUNA_COD_BENEFICIARIA = 7
+COLUNA_NUC_BENEFICIARIA = 8
+COLUNA_ENDERECO_BENEFICIARIA = 9
+COLUNA_UC_REFERENCIA = 10
+COLUNA_NUMERO_SOLICITACAO = 11
+COLUNA_ALERTA = 12                      # automático (ver calcular_alerta) — e-mail/notificação fica pra depois
+COLUNA_TIPO = 13
+COLUNA_DESCRICAO = 14
+COLUNA_DESCRICAO_INTERNA = 15           # MANUAL — resumo da equipe em linguagem própria
+COLUNA_DATA_SOLICITACAO = 16
+COLUNA_SITUACAO = 17
+COLUNA_PRAZO = 18
+COLUNA_DIAS_PRAZO = 19                  # fórmula (ver formula_dias_prazo)
+COLUNA_HISTORICO_PRAZO = 20
+COLUNA_ULTIMA_ATUALIZACAO = 21
+COLUNA_ALERTA_ENVIADO = 22
+COLUNA_DESCOBERTO_EM = 23
+COLUNA_OBSERVACOES = 24
+COLUNA_RESULTADO = 25
+COLUNA_HISTORICO = 26
+COLUNA_ENDERECO = 27
+COLUNA_INSTANCIA = 28                   # MANUAL
+COLUNA_PROTOCOLO_ORIGEM = 29            # MANUAL
+COLUNA_RESOLVIDO = 30                   # MANUAL (checkbox)
+COLUNA_SITUACAO_INTERNA = 31            # MANUAL (dropdown)
+COLUNA_OBSERVACOES_INTERNAS = 32        # MANUAL
+COLUNA_NUC_REAL = 33
+
+TOTAL_COLUNAS = 34  # A..AH
+
+CABECALHO_PROTOCOLOS = [
+    "Cliente", "Responsavel", "Razao Social", "CNPJ",
+    "Codigo Cliente Geradora", "NUC Geradora", "Endereco Geradora",
+    "Codigo Cliente Beneficiaria", "NUC Beneficiaria", "Endereco Beneficiaria",
+    "UC (referencia)", "No da Solicitacao", "Alerta", "Tipo", "Descricao",
+    "Descricao Interna", "Data da Solicitacao", "Situacao", "Prazo",
+    "Dias p/ prazo", "Hist. Prazo", "Ultima Atualizacao", "Alerta Enviado",
+    "Descoberto em", "Observacoes", "Resultado", "Historico", "Endereco",
+    "Instancia", "Protocolo origem", "Resolvido", "Situacao interna",
+    "Observacoes internas", "NUC (UC real)",
+]
+assert len(CABECALHO_PROTOCOLOS) == TOTAL_COLUNAS
+
+# Colunas manuais (editadas pela equipe nas abas por cliente). O robô lê essas
+# colunas ANTES de sobrescrever a aba do cliente, pra não perder edição. Não
+# são todas contíguas — sincroniza célula a célula (ver sincronizar_edicoes_do_cliente).
 COLUNAS_MANUAIS_INDICE = {
-    "instancia": 16, "protocolo_origem": 17, "resolvido": 18, "situacao_interna": 19,
-    "observacoes_internas": 20, "responsavel": 25,
+    "responsavel": COLUNA_RESPONSAVEL,
+    "descricao_interna": COLUNA_DESCRICAO_INTERNA,
+    "instancia": COLUNA_INSTANCIA,
+    "protocolo_origem": COLUNA_PROTOCOLO_ORIGEM,
+    "resolvido": COLUNA_RESOLVIDO,
+    "situacao_interna": COLUNA_SITUACAO_INTERNA,
+    "observacoes_internas": COLUNA_OBSERVACOES_INTERNAS,
 }
-COLUNA_HISTORICO_PRAZO = 22  # W
-COLUNA_NUC_REAL = 23  # X
-COLUNA_RAZAO_SOCIAL = 24  # Y
-COLUNA_RESPONSAVEL = 25  # Z
+
+RESPONSAVEIS = ["-", "Leticia", "Mariane", "Monalisa", "Andressa"]
 
 COR_HEADER = {"red": 0.043, "green": 0.42, "blue": 0.278}  # #0B6B47
 COR_BANDA_PAR = {"red": 0.933, "green": 0.965, "blue": 0.945}
 COR_BORDA = {"color": {"red": 0.85, "green": 0.85, "blue": 0.85}, "style": "SOLID"}
 LARGURAS_COLUNAS = {
-    0: 110, 1: 120, 2: 110, 3: 130, 4: 150, 5: 170, 6: 100, 7: 110, 8: 100,
-    9: 130, 10: 100, 11: 130, 12: 160, 13: 260, 14: 280, 15: 260, 16: 80,
-    17: 140, 18: 90, 19: 170, 20: 260, 21: 100, 22: 280, 23: 160, 24: 220, 25: 150,
+    COLUNA_CLIENTE: 110, COLUNA_RESPONSAVEL: 110, COLUNA_RAZAO_SOCIAL: 220, COLUNA_CNPJ: 130,
+    COLUNA_COD_GERADORA: 150, COLUNA_NUC_GERADORA: 150, COLUNA_ENDERECO_GERADORA: 260,
+    COLUNA_COD_BENEFICIARIA: 150, COLUNA_NUC_BENEFICIARIA: 150, COLUNA_ENDERECO_BENEFICIARIA: 260,
+    COLUNA_UC_REFERENCIA: 110, COLUNA_NUMERO_SOLICITACAO: 130, COLUNA_ALERTA: 180,
+    COLUNA_TIPO: 150, COLUNA_DESCRICAO: 170, COLUNA_DESCRICAO_INTERNA: 220,
+    COLUNA_DATA_SOLICITACAO: 100, COLUNA_SITUACAO: 110, COLUNA_PRAZO: 100,
+    COLUNA_DIAS_PRAZO: 100, COLUNA_HISTORICO_PRAZO: 280, COLUNA_ULTIMA_ATUALIZACAO: 130,
+    COLUNA_ALERTA_ENVIADO: 100, COLUNA_DESCOBERTO_EM: 130, COLUNA_OBSERVACOES: 160,
+    COLUNA_RESULTADO: 260, COLUNA_HISTORICO: 280, COLUNA_ENDERECO: 260,
+    COLUNA_INSTANCIA: 80, COLUNA_PROTOCOLO_ORIGEM: 140, COLUNA_RESOLVIDO: 90,
+    COLUNA_SITUACAO_INTERNA: 170, COLUNA_OBSERVACOES_INTERNAS: 260, COLUNA_NUC_REAL: 160,
 }
-TOTAL_COLUNAS = 26  # A..Z
 
 
 def normalizar_numero(numero):
@@ -91,26 +137,14 @@ def normalizar_numero(numero):
     confirmado em produção, causava duplicata porque a chave de dedup não
     batia. Números de 12 dígitos (700002.../300002...) nunca têm esse
     problema por já estarem no tamanho máximo; só afeta os mais curtos.
-    Remove zeros à esquerda pra sempre comparar/gravar na mesma forma."""
+    Remove zeros à esquerda pra sempre comparar/gravar na mesma forma.
+    Também usada pra casar código de cliente entre a nossa lista de UCs e a
+    planilha de controle externa (clienteContato/unidadesGeradoras), que usa
+    o mesmo número sem padding."""
     numero = str(numero).strip()
     sem_zeros = numero.lstrip("0")
     return sem_zeros if sem_zeros else numero
 
-
-def formula_dias_prazo(linha):
-    """Fórmula da coluna V (Dias p/ prazo). A planilha tem locale en_US
-    (M/D/YYYY), mas gravamos Prazo como texto DD/MM/YYYY — se a gente deixar
-    o Sheets 'adivinhar' o formato, ele não reconhece como data e a subtração
-    direta (I-TODAY()) quebra com #VALUE!. Por isso parseia o texto na mão
-    (dia/mês/ano) em vez de depender do Sheets reconhecer a data sozinho —
-    funciona com qualquer locale."""
-    return (
-        f'=IF(OR(H{linha}="Finalizada",I{linha}="",I{linha}="00/00/0000"),"",'
-        f'IFERROR(DATE(VALUE(RIGHT(I{linha},4)),VALUE(MID(I{linha},4,2)),VALUE(LEFT(I{linha},2)))-TODAY(),""))'
-    )
-
-
-# --- APIs da Agência Virtual (mesmo backend usado pelo extrator.py pra faturas) ---
 
 def _coluna_letra(indice):
     """Converte um índice de coluna 0-indexed pra letra do Sheets (0->A, 25->Z, 26->AA...)."""
@@ -121,6 +155,65 @@ def _coluna_letra(indice):
         letra = chr(65 + resto) + letra
     return letra
 
+
+def formula_dias_prazo(linha):
+    """Fórmula da coluna "Dias p/ prazo". A planilha tem locale en_US
+    (M/D/YYYY), mas gravamos Prazo como texto DD/MM/YYYY — se a gente deixar
+    o Sheets 'adivinhar' o formato, ele não reconhece como data e a subtração
+    direta (Prazo-TODAY()) quebra com #VALUE!. Por isso parseia o texto na mão
+    (dia/mês/ano) em vez de depender do Sheets reconhecer a data sozinho —
+    funciona com qualquer locale. Usa _coluna_letra() pras colunas de
+    Situacao/Prazo em vez de letra fixa — já tomamos um susto antes com uma
+    linha antiga carregando a fórmula velha depois que as colunas mudaram de
+    posição."""
+    col_situacao = _coluna_letra(COLUNA_SITUACAO)
+    col_prazo = _coluna_letra(COLUNA_PRAZO)
+    return (
+        f'=IF(OR({col_situacao}{linha}="Finalizada",{col_prazo}{linha}="",{col_prazo}{linha}="00/00/0000"),"",'
+        f'IFERROR(DATE(VALUE(RIGHT({col_prazo}{linha},4)),VALUE(MID({col_prazo}{linha},4,2)),VALUE(LEFT({col_prazo}{linha},2)))-TODAY(),""))'
+    )
+
+
+def _dias_ate_prazo(prazo_str, situacao):
+    """Mesma lógica da fórmula do Sheets, mas em Python — usada pra calcular
+    o texto de ALERTA no momento em que a linha é escrita (não dá pra
+    depender do valor da fórmula, que só recalcula depois que a célula
+    existe de verdade na planilha)."""
+    if (situacao or "").strip().lower() == "finalizada":
+        return None
+    prazo_str = (prazo_str or "").strip()
+    if not prazo_str or prazo_str == "00/00/0000":
+        return None
+    try:
+        dia, mes, ano = prazo_str.split("/")
+        data_prazo = datetime(int(ano), int(mes), int(dia))
+        return (data_prazo.date() - datetime.now().date()).days
+    except Exception:
+        return None
+
+
+def _contar_prorrogacoes(hist_prazo):
+    return len([l for l in str(hist_prazo or "").split("\n") if l.strip()])
+
+
+def calcular_alerta(situacao, prazo_str, hist_prazo):
+    """Resumo automático e curto de alertas pra essa linha (pra ficar visível
+    na planilha sem precisar abrir o painel). Por enquanto só texto — enviar
+    e-mail/notificação a partir daqui fica pra decidir depois."""
+    partes = []
+    dias = _dias_ate_prazo(prazo_str, situacao)
+    if dias is not None:
+        if dias < 0:
+            partes.append(f"Vencido há {abs(dias)}d")
+        elif dias <= 3:
+            partes.append(f"Vencendo em {dias}d")
+    qtd_prorrogacoes = _contar_prorrogacoes(hist_prazo)
+    if qtd_prorrogacoes > 4:
+        partes.append(f"{qtd_prorrogacoes} prorrogações")
+    return " / ".join(partes)
+
+
+# --- APIs da Agência Virtual (mesmo backend usado pelo extrator.py pra faturas) ---
 
 def _formatar_nuc(codigo_uc_aneel):
     """Converte o codigoUcAneel cru da API (ex: "000632012602803") pro
@@ -137,7 +230,8 @@ def obter_ucs_cliente(login_user, token_ne_se):
     """Lista de UCs da conta. Cada item traz 'uc' (codigo usado nas outras
     chamadas de API), 'nuc' (Numero da Unidade Consumidora formatado) e o
     endereco, pra permitir identificar qual UC e a dona de cada solicitacao
-    (ver identificar_uc_por_endereco)."""
+    (ver identificar_uc_beneficiaria) e qual e a usina geradora vinculada
+    (ver identificar_geradora)."""
     headers_api = {"User-Agent": "Mozilla/5.0", "Authorization": "Bearer " + token_ne_se}
     try:
         r = requests.get(
@@ -175,15 +269,21 @@ def _normalizar_texto_endereco(texto):
     return re.sub(r"[^A-Z0-9]+", " ", texto).strip()
 
 
-def identificar_uc_por_endereco(endereco_solicitacao, ucs_info):
+def _endereco_completo_uc(uc):
+    partes = [uc.get("endereco", ""), uc.get("bairro", ""), uc.get("municipio", "")]
+    return ", ".join(p for p in partes if p)
+
+
+def identificar_uc_beneficiaria(endereco_solicitacao, ucs_info):
     """Casa o Endereco de uma solicitacao (vindo de pedidos-detalhe) contra a
     lista de UCs do cliente (cada uma com endereco vindo da API de UCs), pra
-    achar a UC "dona" real da solicitacao. Devolve o NUC formatado se achar
-    exatamente uma UC compativel; devolve "" se nao achar nenhuma ou achar
-    mais de uma (ambiguo) — melhor deixar em branco do que arriscar errado."""
+    achar a UC "beneficiária" — a UC real/consumidora dona da solicitação.
+    Devolve o dict da UC (uc/nuc/endereco/...) se achar exatamente uma
+    compatível; None se não achar nenhuma ou achar mais de uma (ambíguo) —
+    melhor deixar em branco do que arriscar errado."""
     alvo = _normalizar_texto_endereco(endereco_solicitacao)
     if not alvo:
-        return ""
+        return None
     candidatas = []
     for uc in ucs_info:
         endereco_uc = _normalizar_texto_endereco(
@@ -196,8 +296,104 @@ def identificar_uc_por_endereco(endereco_solicitacao, ucs_info):
             candidatas.append(uc)
     nucs_unicos = {c["nuc"] for c in candidatas if c.get("nuc")}
     if len(nucs_unicos) == 1:
-        return candidatas[0]["nuc"]
-    return ""
+        return candidatas[0]
+    return None
+
+
+def carregar_mapa_geradoras(client_sheets):
+    """Lê as abas 'clienteContato' e 'unidadesGeradoras' da planilha de
+    controle (a mesma usada pelo módulo de Faturas) e monta dois mapas:
+    código do cliente da UC beneficiária (normalizado, sem zeros à esquerda)
+    -> nome da usina; e nome da usina -> código do cliente da UC GERADORA.
+    Usado pra achar a usina geradora vinculada a uma solicitação, a partir
+    da UC beneficiária dela (ver identificar_geradora). Se der erro (planilha
+    fora do ar, aba renomeada etc), devolve mapas vazios — a geradora
+    simplesmente fica em branco, não trava o resto do processamento."""
+    try:
+        planilha_controle = client_sheets.open_by_key(CONTROLE_SPREADSHEET_ID)
+
+        valores_contato = planilha_controle.worksheet(ABA_CLIENTE_CONTATO).get_all_values()
+        cab_contato = valores_contato[0]
+        idx_codigo = cab_contato.index("contato do cliente")
+        idx_usina = cab_contato.index("Usina")
+        beneficiaria_para_usina = {}
+        for linha in valores_contato[1:]:
+            if len(linha) <= max(idx_codigo, idx_usina):
+                continue
+            codigo = normalizar_numero(linha[idx_codigo])
+            usina = linha[idx_usina].strip()
+            if codigo and usina:
+                beneficiaria_para_usina[codigo] = usina
+
+        valores_geradoras = planilha_controle.worksheet(ABA_UNIDADES_GERADORAS).get_all_values()
+        # Essa aba tem uma linha de lixo antes do cabeçalho real (["F"]).
+        idx_cab = next((i for i, linha in enumerate(valores_geradoras) if "codigo_cliente" in linha), None)
+        usina_para_geradora = {}
+        if idx_cab is not None:
+            cab_g = valores_geradoras[idx_cab]
+            idx_cod_g = cab_g.index("codigo_cliente")
+            idx_usina_g = cab_g.index("Usina")
+            for linha in valores_geradoras[idx_cab + 1:]:
+                if len(linha) <= max(idx_cod_g, idx_usina_g):
+                    continue
+                usina = linha[idx_usina_g].strip()
+                codigo_g = normalizar_numero(linha[idx_cod_g])
+                if usina and codigo_g:
+                    usina_para_geradora[usina] = codigo_g
+
+        return beneficiaria_para_usina, usina_para_geradora
+    except Exception as e:
+        print(f"  ⚠️ Não consegui carregar o mapa de usinas geradoras: {e}")
+        return {}, {}
+
+
+def identificar_geradora(codigo_beneficiaria, ucs_cliente, beneficiaria_para_usina, usina_para_geradora):
+    """A partir do código do cliente da UC beneficiária (a UC real da
+    solicitação), acha a UC geradora vinculada, cruzando clienteContato +
+    unidadesGeradoras + a lista de UCs do cliente (a geradora também é uma
+    UC da mesma conta na Coelba). Devolve o dict da UC geradora (uc/nuc/
+    endereco/...) ou None se a cadeia falhar em algum passo — melhor em
+    branco do que errado."""
+    if not codigo_beneficiaria:
+        return None
+    codigo_norm = normalizar_numero(codigo_beneficiaria)
+    usina = beneficiaria_para_usina.get(codigo_norm, "")
+    if not usina:
+        return None
+    codigo_geradora = usina_para_geradora.get(usina, "")
+    if not codigo_geradora:
+        return None
+    for uc in ucs_cliente:
+        if normalizar_numero(uc.get("uc", "")) == codigo_geradora:
+            return uc
+    return None
+
+
+def identificar_geradora_e_beneficiaria(endereco_solicitacao, ucs_cliente, beneficiaria_para_usina, usina_para_geradora):
+    """Função de conveniência: a partir do endereço de uma solicitação,
+    devolve um dict com os 7 campos derivados (geradora e beneficiária:
+    código, NUC, endereço; mais o NUC "real" mantido por compatibilidade
+    com a coluna antiga). Campos ficam em branco quando a cadeia de match
+    falha em algum passo — sempre melhor branco do que errado."""
+    resultado = {
+        "cod_geradora": "", "nuc_geradora": "", "endereco_geradora": "",
+        "cod_beneficiaria": "", "nuc_beneficiaria": "", "endereco_beneficiaria": "",
+        "nuc_real": "",
+    }
+    uc_beneficiaria = identificar_uc_beneficiaria(endereco_solicitacao, ucs_cliente)
+    if not uc_beneficiaria:
+        return resultado
+    resultado["nuc_real"] = uc_beneficiaria.get("nuc", "")
+    resultado["cod_beneficiaria"] = uc_beneficiaria.get("uc", "")
+    resultado["nuc_beneficiaria"] = uc_beneficiaria.get("nuc", "")
+    resultado["endereco_beneficiaria"] = _endereco_completo_uc(uc_beneficiaria)
+
+    uc_geradora = identificar_geradora(uc_beneficiaria.get("uc", ""), ucs_cliente, beneficiaria_para_usina, usina_para_geradora)
+    if uc_geradora:
+        resultado["cod_geradora"] = uc_geradora.get("uc", "")
+        resultado["nuc_geradora"] = uc_geradora.get("nuc", "")
+        resultado["endereco_geradora"] = _endereco_completo_uc(uc_geradora)
+    return resultado
 
 
 def obter_protocolo_uc(login_user, uc_codigo, token_ne_se):
@@ -318,16 +514,12 @@ def _abrir_aba_protocolos():
     return planilha.worksheet(ABA_PROTOCOLOS)
 
 
-RESPONSAVEIS = ["-", "Leticia", "Mariane", "Monalisa", "Andressa"]
-
-
 def aplicar_validacao_controle(aba, linha_inicio, linha_fim):
-    """Checkbox (Resolvido, col S), dropdown (Situacao interna, col T) e
-    dropdown (Responsavel, col Z) só nas linhas indicadas. NUNCA aplicar isso
-    adiantado em linhas sem dado — o Sheets grava 'FALSE' de verdade em
-    célula de checkbox vazia, e isso já confundiu a detecção de fim de
-    tabela do Sheets uma vez (linhas novas caindo centenas de linhas abaixo
-    do esperado)."""
+    """Checkbox (Resolvido), dropdown (Situacao interna) e dropdown
+    (Responsavel) só nas linhas indicadas. NUNCA aplicar isso adiantado em
+    linhas sem dado — o Sheets grava 'FALSE' de verdade em célula de checkbox
+    vazia, e isso já confundiu a detecção de fim de tabela do Sheets uma vez
+    (linhas novas caindo centenas de linhas abaixo do esperado)."""
     try:
         client = autenticar_google_sheets()
         planilha = client.open_by_key(PROTOCOLOS_SPREADSHEET_ID)
@@ -335,13 +527,13 @@ def aplicar_validacao_controle(aba, linha_inicio, linha_fim):
         planilha.batch_update({"requests": [
             {
                 "setDataValidation": {
-                    "range": {"sheetId": sheet_id, "startRowIndex": linha_inicio - 1, "endRowIndex": linha_fim, "startColumnIndex": 18, "endColumnIndex": 19},
+                    "range": {"sheetId": sheet_id, "startRowIndex": linha_inicio - 1, "endRowIndex": linha_fim, "startColumnIndex": COLUNA_RESOLVIDO, "endColumnIndex": COLUNA_RESOLVIDO + 1},
                     "rule": {"condition": {"type": "BOOLEAN"}, "strict": True},
                 }
             },
             {
                 "setDataValidation": {
-                    "range": {"sheetId": sheet_id, "startRowIndex": linha_inicio - 1, "endRowIndex": linha_fim, "startColumnIndex": 19, "endColumnIndex": 20},
+                    "range": {"sheetId": sheet_id, "startRowIndex": linha_inicio - 1, "endRowIndex": linha_fim, "startColumnIndex": COLUNA_SITUACAO_INTERNA, "endColumnIndex": COLUNA_SITUACAO_INTERNA + 1},
                     "rule": {
                         "condition": {
                             "type": "ONE_OF_LIST",
@@ -503,7 +695,7 @@ def _estilizar_aba_simples(planilha, aba, qtd_colunas, total_linhas, largura_col
 def atualizar_aba_ucs_depara(planilha, cliente, ucs):
     """Escreve/atualiza, na aba 'UCs (de-para)', a lista de UCs desse cliente
     (código, NUC, razão social, endereço) vinda da API. Serve pra conferência
-    manual do matching endereço→UC (ver identificar_uc_por_endereco) e como
+    manual do matching endereço→UC (ver identificar_uc_beneficiaria) e como
     base pro preenchimento retroativo de linhas antigas. Substitui só as
     linhas desse cliente a cada rodada (a UC pode ter mudado de endereço)."""
     nome = cliente.upper()
@@ -547,12 +739,11 @@ def obter_ou_criar_aba_cliente(planilha, cliente, cabecalho):
 
 def sincronizar_edicoes_do_cliente(aba_protocolos, planilha, cliente):
     """Lê a aba do cliente (se existir) e aplica na aba 'Protocolos' qualquer
-    edição manual feita lá (Instancia, Protocolo origem, Resolvido, Situacao
-    interna, Observacoes internas, Responsavel) — ANTES de regenerar a aba do
-    cliente, pra não perder o que a equipe editou desde a última rodada.
-    Os índices manuais não são todos contíguos (Responsavel foi adicionada
-    depois, no fim da planilha), então sincroniza célula a célula em vez de
-    depender de um único range contíguo."""
+    edição manual feita lá (Responsavel, Descricao Interna, Instancia,
+    Protocolo origem, Resolvido, Situacao interna, Observacoes internas) —
+    ANTES de regenerar a aba do cliente, pra não perder o que a equipe editou
+    desde a última rodada. Os índices manuais não são todos contíguos, então
+    sincroniza célula a célula em vez de depender de um único range contíguo."""
     nome = cliente.upper()
     aba_cliente = None
     for ws in planilha.worksheets():
@@ -568,9 +759,9 @@ def sincronizar_edicoes_do_cliente(aba_protocolos, planilha, cliente):
 
     valores_protocolos = aba_protocolos.get_all_values()
     linha_por_numero = {
-        normalizar_numero(linha[3]): i + 1
+        normalizar_numero(linha[COLUNA_NUMERO_SOLICITACAO]): i + 1
         for i, linha in enumerate(valores_protocolos)
-        if i > 0 and len(linha) > 3 and linha[0].strip() == nome and linha[3].strip()
+        if i > 0 and len(linha) > COLUNA_NUMERO_SOLICITACAO and linha[0].strip() == nome and linha[COLUNA_NUMERO_SOLICITACAO].strip()
     }
 
     indices_manuais = sorted(COLUNAS_MANUAIS_INDICE.values())
@@ -580,7 +771,7 @@ def sincronizar_edicoes_do_cliente(aba_protocolos, planilha, cliente):
     for linha in valores_cliente[1:]:
         if len(linha) <= maior_indice_manual:
             continue
-        numero = normalizar_numero(linha[3]) if len(linha) > 3 else ""
+        numero = normalizar_numero(linha[COLUNA_NUMERO_SOLICITACAO]) if len(linha) > COLUNA_NUMERO_SOLICITACAO else ""
         linha_protocolos = linha_por_numero.get(numero)
         if not linha_protocolos:
             continue
@@ -644,18 +835,18 @@ def carregar_index_protocolos(aba):
     for i, linha in enumerate(valores):
         if i == 0:
             continue  # cabeçalho
-        if len(linha) < 11:
+        if len(linha) <= COLUNA_NUMERO_SOLICITACAO:
             continue
         cliente = linha[0].strip()
-        numero = normalizar_numero(linha[3])
+        numero = normalizar_numero(linha[COLUNA_NUMERO_SOLICITACAO])
         if not cliente or not numero:
             continue
         index[(cliente, numero)] = {
             "linha": i + 1,
-            "situacao": linha[7].strip(),
-            "prazo": linha[8].strip() if len(linha) > 8 else "",
-            "ultima_atualizacao": linha[9].strip() if len(linha) > 9 else "",
-            "alerta_enviado": linha[10].strip(),
+            "situacao": linha[COLUNA_SITUACAO].strip() if len(linha) > COLUNA_SITUACAO else "",
+            "prazo": linha[COLUNA_PRAZO].strip() if len(linha) > COLUNA_PRAZO else "",
+            "ultima_atualizacao": linha[COLUNA_ULTIMA_ATUALIZACAO].strip() if len(linha) > COLUNA_ULTIMA_ATUALIZACAO else "",
+            "alerta_enviado": linha[COLUNA_ALERTA_ENVIADO].strip() if len(linha) > COLUNA_ALERTA_ENVIADO else "",
             "historico_prazo": linha[COLUNA_HISTORICO_PRAZO].strip() if len(linha) > COLUNA_HISTORICO_PRAZO else "",
         }
     return index, len(valores)
@@ -671,7 +862,7 @@ def carregar_dataframe_protocolos():
     linhas = [
         linha + [""] * (len(cabecalho) - len(linha))
         for linha in valores[1:]
-        if linha and len(linha) > 3 and linha[3].strip()
+        if linha and len(linha) > COLUNA_NUMERO_SOLICITACAO and linha[COLUNA_NUMERO_SOLICITACAO].strip()
     ]
     df = pd.DataFrame(linhas, columns=cabecalho)
     if "Dias p/ prazo" in df.columns:
@@ -684,6 +875,8 @@ def carregar_dataframe_protocolos():
 # (escopo https://www.googleapis.com/auth/gmail.send) para a conta de serviço,
 # além das variáveis ALERTA_EMAIL_REMETENTE e ALERTA_EMAIL_DESTINATARIOS no .env/secrets.
 # Enquanto isso não estiver configurado, o alerta continua funcionando só pela planilha.
+# O conteúdo da coluna "Alerta" (ver calcular_alerta) é independente disso —
+# e-mail/notificação automática a partir dela ainda não foi decidido.
 
 GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
 
@@ -779,6 +972,8 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
         except Exception as e:
             print(f"  ⚠️ [{cliente}] Não consegui atualizar a aba 'UCs (de-para)': {e}")
 
+        mapa_beneficiaria_usina, mapa_usina_geradora = carregar_mapa_geradoras(client_sheets)
+
         protocolo = obter_protocolo_uc(login_user, uc_referencia, token_ne_se)
         if not protocolo:
             print(f"  ⚠️ [{cliente}] Não consegui obter protocolo de sessão.")
@@ -792,7 +987,9 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
             solicitacoes_recentes = []
 
         novas_linhas_buffer = []
-        atualizacoes_buffer = []  # (linha, descricao, [situacao, prazo, ultima_atualizacao, alerta_enviado], resultado, historico, endereco, historico_prazo)
+        # atualizacoes_buffer: (linha, descricao, [situacao, prazo, ultima_atualizacao,
+        # alerta_enviado], resultado, historico, endereco, hist_prazo, info_geradora, alerta_texto)
+        atualizacoes_buffer = []
         agora = datetime.now().strftime("%d/%m/%Y %H:%M")
         vistos_nesta_rodada = set()
         # Protocolos abertos na lista recente que não mudaram de status —
@@ -818,27 +1015,41 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
                     if enviar_alerta_email(cliente, numero, tipo):
                         alerta_enviado = "SIM"
                     alertas += 1
-                nuc_real = identificar_uc_por_endereco(detalhe.get("endereco", ""), ucs)
+                info = identificar_geradora_e_beneficiaria(detalhe.get("endereco", ""), ucs, mapa_beneficiaria_usina, mapa_usina_geradora)
+                alerta_texto = calcular_alerta(situacao, detalhe.get("prazo", ""), "")
                 linha_valores = [
-                    cliente.upper(), login_user, uc_referencia, numero, tipo,
-                    detalhe.get("descricao", ""), data_solicitacao, situacao,
-                    detalhe.get("prazo", ""), detalhe.get("ultima_atualizacao", "") or agora,
-                    alerta_enviado, agora, "", detalhe.get("resultado", ""), detalhe.get("historico", ""),
-                    detalhe.get("endereco", ""),
-                    # Q..V: Instancia, Protocolo origem, Resolvido, Situacao interna,
-                    # Observacoes internas (controle manual) e Dias p/ prazo (formula,
-                    # recalcula sozinha e já referencia a linha certa).
-                    "1", "", "FALSE", "-", "",
-                    formula_dias_prazo(proxima_linha),
+                    cliente.upper(),                                  # Cliente
+                    "",                                                # Responsavel (manual)
+                    razao_social,                                      # Razao Social
+                    login_user,                                        # CNPJ
+                    info["cod_geradora"], info["nuc_geradora"], info["endereco_geradora"],
+                    info["cod_beneficiaria"], info["nuc_beneficiaria"], info["endereco_beneficiaria"],
+                    uc_referencia,                                      # UC (referencia)
+                    numero,                                             # No da Solicitacao
+                    alerta_texto,                                       # Alerta
+                    tipo,                                               # Tipo
+                    detalhe.get("descricao", ""),                       # Descricao
+                    "",                                                 # Descricao Interna (manual)
+                    data_solicitacao,                                   # Data da Solicitacao
+                    situacao,                                           # Situacao
+                    detalhe.get("prazo", ""),                           # Prazo
+                    formula_dias_prazo(proxima_linha),                  # Dias p/ prazo (formula)
+                    "",                                                 # Hist. Prazo
+                    detalhe.get("ultima_atualizacao", "") or agora,     # Ultima Atualizacao
+                    alerta_enviado,                                     # Alerta Enviado
+                    agora,                                              # Descoberto em
+                    "",                                                 # Observacoes
+                    detalhe.get("resultado", ""),                       # Resultado
+                    detalhe.get("historico", ""),                       # Historico
+                    detalhe.get("endereco", ""),                        # Endereco
+                    "1",                                                # Instancia (manual)
+                    "",                                                 # Protocolo origem (manual)
+                    "FALSE",                                            # Resolvido (manual)
+                    "-",                                                # Situacao interna (manual)
+                    "",                                                 # Observacoes internas (manual)
+                    info["nuc_real"],                                   # NUC (UC real)
                 ]
-                # Coluna W (Historico Prazo) — vazia pra solicitações novas
-                linha_valores.append("")
-                # Coluna X (NUC real) — identificado pelo endereço, vazio se não bater
-                linha_valores.append(nuc_real)
-                # Coluna Y (Razao Social) — constante por cliente, vinda da API de UCs
-                linha_valores.append(razao_social)
-                # Coluna Z (Responsavel) — manual, começa vazia
-                linha_valores.append("")
+                assert len(linha_valores) == TOTAL_COLUNAS
                 novas_linhas_buffer.append(linha_valores)
                 index[chave] = {"linha": proxima_linha, "situacao": situacao, "alerta_enviado": alerta_enviado,
                                 "prazo": detalhe.get("prazo", ""), "ultima_atualizacao": detalhe.get("ultima_atualizacao", ""),
@@ -859,6 +1070,8 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
                 if novo_prazo and novo_prazo != registro.get("prazo", ""):
                     log_prazo = f"[{agora}] Prazo alterado: {registro.get('prazo', '?')} → {novo_prazo}"
                     hist_prazo = f"{hist_prazo}\n{log_prazo}".strip() if hist_prazo else log_prazo
+                info = identificar_geradora_e_beneficiaria(detalhe.get("endereco", ""), ucs, mapa_beneficiaria_usina, mapa_usina_geradora)
+                alerta_texto = calcular_alerta(situacao, novo_prazo or registro.get("prazo", ""), hist_prazo)
                 atualizacoes_buffer.append((
                     registro["linha"],
                     detalhe.get("descricao", ""),
@@ -867,8 +1080,8 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
                     detalhe.get("historico", ""),
                     detalhe.get("endereco", ""),
                     hist_prazo,
-                    identificar_uc_por_endereco(detalhe.get("endereco", ""), ucs),
-                    razao_social,
+                    info,
+                    alerta_texto,
                 ))
                 index[chave]["situacao"] = situacao
                 index[chave]["alerta_enviado"] = alerta_enviado
@@ -925,23 +1138,27 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
                             alerta_enviado = "SIM"
                         alertas += 1
 
-                    # Registra mudança de prazo na coluna W (Hist. Prazo)
+                    # Registra mudança de prazo na coluna Hist. Prazo
                     hist_prazo = dados_antigos.get("historico_prazo", "")
                     if mudou_prazo:
                         log_prazo = f"[{agora}] Prazo alterado: {dados_antigos.get('prazo', '?')} → {novo_prazo}"
                         hist_prazo = f"{hist_prazo}\n{log_prazo}".strip() if hist_prazo else log_prazo
                         print(f"  📅 [{cliente}] Solicitação {numero}: prazo alterado de {dados_antigos.get('prazo', '?')} para {novo_prazo}")
 
+                    info = identificar_geradora_e_beneficiaria(detalhe.get("endereco", ""), ucs, mapa_beneficiaria_usina, mapa_usina_geradora)
+                    situacao_final = nova_situacao or dados_antigos["situacao"]
+                    alerta_texto = calcular_alerta(situacao_final, novo_prazo or dados_antigos.get("prazo", ""), hist_prazo)
+
                     atualizacoes_buffer.append((
                         dados_antigos["linha"],
                         detalhe.get("descricao", ""),
-                        [nova_situacao or dados_antigos["situacao"], novo_prazo, nova_ult_atualizacao or agora, alerta_enviado],
+                        [situacao_final, novo_prazo, nova_ult_atualizacao or agora, alerta_enviado],
                         detalhe.get("resultado", ""),
                         detalhe.get("historico", ""),
                         detalhe.get("endereco", ""),
                         hist_prazo,
-                        identificar_uc_por_endereco(detalhe.get("endereco", ""), ucs),
-                        razao_social,
+                        info,
+                        alerta_texto,
                     ))
                     if mudou_status:
                         index[chave]["situacao"] = nova_situacao
@@ -955,14 +1172,14 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
             # execução concorrente/anterior — relê a planilha (estado real, não
             # o índice carregado no início da função) antes de gravar.
             chaves_existentes = {
-                (linha[0].strip(), normalizar_numero(linha[3]))
+                (linha[0].strip(), normalizar_numero(linha[COLUNA_NUMERO_SOLICITACAO]))
                 for linha in aba.get_all_values()[1:]
-                if len(linha) > 3
+                if len(linha) > COLUNA_NUMERO_SOLICITACAO
             }
             antes = len(novas_linhas_buffer)
             novas_linhas_buffer = [
                 linha for linha in novas_linhas_buffer
-                if (linha[0], normalizar_numero(linha[3])) not in chaves_existentes
+                if (linha[0], normalizar_numero(linha[COLUNA_NUMERO_SOLICITACAO])) not in chaves_existentes
             ]
             evitadas = antes - len(novas_linhas_buffer)
             if evitadas:
@@ -981,26 +1198,36 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
                 aplicar_validacao_controle(aba, linha_inicio_novas, linha_inicio_novas + len(novas_linhas_buffer) - 1)
         if atualizacoes_buffer:
             updates = []
-            for item in atualizacoes_buffer:
-                linha, descricao, valores_hk, resultado, historico, endereco = item[:6]
-                hist_prazo = item[6] if len(item) > 6 else ""
-                nuc_real = item[7] if len(item) > 7 else ""
-                razao_social_item = item[8] if len(item) > 8 else ""
+            for linha, descricao, valores_situacao, resultado, historico, endereco, hist_prazo, info, alerta_texto in atualizacoes_buffer:
+                situacao_v, prazo_v, ultima_v, alerta_env_v = valores_situacao
                 if descricao:
-                    updates.append({"range": f"F{linha}", "values": [[descricao]]})
-                updates.append({"range": f"H{linha}:K{linha}", "values": [valores_hk]})
+                    updates.append({"range": f"{_coluna_letra(COLUNA_DESCRICAO)}{linha}", "values": [[descricao]]})
+                updates.append({"range": f"{_coluna_letra(COLUNA_SITUACAO)}{linha}", "values": [[situacao_v]]})
+                updates.append({"range": f"{_coluna_letra(COLUNA_PRAZO)}{linha}", "values": [[prazo_v]]})
+                updates.append({"range": f"{_coluna_letra(COLUNA_ULTIMA_ATUALIZACAO)}{linha}", "values": [[ultima_v]]})
+                updates.append({"range": f"{_coluna_letra(COLUNA_ALERTA_ENVIADO)}{linha}", "values": [[alerta_env_v]]})
                 if hist_prazo:
-                    updates.append({"range": f"W{linha}", "values": [[hist_prazo]]})
+                    updates.append({"range": f"{_coluna_letra(COLUNA_HISTORICO_PRAZO)}{linha}", "values": [[hist_prazo]]})
                 if resultado:
-                    updates.append({"range": f"N{linha}", "values": [[resultado]]})
+                    updates.append({"range": f"{_coluna_letra(COLUNA_RESULTADO)}{linha}", "values": [[resultado]]})
                 if historico:
-                    updates.append({"range": f"O{linha}", "values": [[historico]]})
+                    updates.append({"range": f"{_coluna_letra(COLUNA_HISTORICO)}{linha}", "values": [[historico]]})
                 if endereco:
-                    updates.append({"range": f"P{linha}", "values": [[endereco]]})
-                if nuc_real:
-                    updates.append({"range": f"X{linha}", "values": [[nuc_real]]})
-                if razao_social_item:
-                    updates.append({"range": f"Y{linha}", "values": [[razao_social_item]]})
+                    updates.append({"range": f"{_coluna_letra(COLUNA_ENDERECO)}{linha}", "values": [[endereco]]})
+                # Alerta é sempre reescrito (mesmo vazio), já que precisa
+                # "desligar" quando deixa de ser verdade (ex: prazo deixou de
+                # estar vencendo porque a Coelba empurrou pra frente).
+                updates.append({"range": f"{_coluna_letra(COLUNA_ALERTA)}{linha}", "values": [[alerta_texto]]})
+                if info.get("nuc_real"):
+                    updates.append({"range": f"{_coluna_letra(COLUNA_NUC_REAL)}{linha}", "values": [[info['nuc_real']]]})
+                if info.get("cod_beneficiaria"):
+                    updates.append({"range": f"{_coluna_letra(COLUNA_COD_BENEFICIARIA)}{linha}", "values": [[info['cod_beneficiaria']]]})
+                    updates.append({"range": f"{_coluna_letra(COLUNA_NUC_BENEFICIARIA)}{linha}", "values": [[info['nuc_beneficiaria']]]})
+                    updates.append({"range": f"{_coluna_letra(COLUNA_ENDERECO_BENEFICIARIA)}{linha}", "values": [[info['endereco_beneficiaria']]]})
+                if info.get("cod_geradora"):
+                    updates.append({"range": f"{_coluna_letra(COLUNA_COD_GERADORA)}{linha}", "values": [[info['cod_geradora']]]})
+                    updates.append({"range": f"{_coluna_letra(COLUNA_NUC_GERADORA)}{linha}", "values": [[info['nuc_geradora']]]})
+                    updates.append({"range": f"{_coluna_letra(COLUNA_ENDERECO_GERADORA)}{linha}", "values": [[info['endereco_geradora']]]})
             aba.batch_update(updates, value_input_option="USER_ENTERED")
 
         regenerar_aba_cliente(aba, planilha, cliente)
@@ -1012,12 +1239,13 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
 
 
 def backfillar_colunas_derivadas():
-    """Preenche retroativamente NUC (coluna X) e Razão Social (coluna Y) nas
-    linhas que já existiam na aba 'Protocolos' antes dessas colunas, usando
-    só a aba 'UCs (de-para)' — sem precisar logar na Coelba de novo. Precisa
-    que o robô já tenha rodado pelo menos uma vez pra cada cliente (pra essa
-    aba ter dado), senão o cliente é simplesmente ignorado. Roda sob demanda,
-    não faz parte do fluxo normal."""
+    """Preenche retroativamente as colunas calculadas (NUC/Geradora/
+    Beneficiária/Alerta/Razão Social) nas linhas que já existiam antes dessas
+    colunas, usando a aba 'UCs (de-para)' + a planilha de controle externa —
+    sem precisar logar na Coelba de novo. Precisa que o robô já tenha rodado
+    pelo menos uma vez pra cada cliente (pra 'UCs (de-para)' ter dado), senão
+    o cliente é simplesmente ignorado. Roda sob demanda, não faz parte do
+    fluxo normal."""
     client = autenticar_google_sheets()
     planilha = client.open_by_key(PROTOCOLOS_SPREADSHEET_ID)
     aba = planilha.worksheet(ABA_PROTOCOLOS)
@@ -1038,6 +1266,8 @@ def backfillar_colunas_derivadas():
             "endereco": linha[4], "bairro": linha[5], "municipio": linha[6],
         })
 
+    mapa_beneficiaria_usina, mapa_usina_geradora = carregar_mapa_geradoras(client)
+
     valores = aba.get_all_values()
     updates = []
     clientes_afetados = set()
@@ -1046,19 +1276,42 @@ def backfillar_colunas_derivadas():
         ucs_cliente = ucs_por_cliente.get(cliente)
         if not ucs_cliente:
             continue
-        endereco = linha[15] if len(linha) > 15 else ""
+        endereco = linha[COLUNA_ENDERECO] if len(linha) > COLUNA_ENDERECO else ""
+        situacao = linha[COLUNA_SITUACAO] if len(linha) > COLUNA_SITUACAO else ""
+        prazo = linha[COLUNA_PRAZO] if len(linha) > COLUNA_PRAZO else ""
+        hist_prazo = linha[COLUNA_HISTORICO_PRAZO] if len(linha) > COLUNA_HISTORICO_PRAZO else ""
+
         nuc_atual = linha[COLUNA_NUC_REAL] if len(linha) > COLUNA_NUC_REAL else ""
         razao_atual = linha[COLUNA_RAZAO_SOCIAL] if len(linha) > COLUNA_RAZAO_SOCIAL else ""
+        cod_benef_atual = linha[COLUNA_COD_BENEFICIARIA] if len(linha) > COLUNA_COD_BENEFICIARIA else ""
+        cod_ger_atual = linha[COLUNA_COD_GERADORA] if len(linha) > COLUNA_COD_GERADORA else ""
+        alerta_atual = linha[COLUNA_ALERTA] if len(linha) > COLUNA_ALERTA else ""
 
-        if not nuc_atual:
-            nuc = identificar_uc_por_endereco(endereco, ucs_cliente)
-            if nuc:
-                updates.append({"range": f"X{i}", "values": [[nuc]]})
+        if not nuc_atual or not cod_benef_atual or not cod_ger_atual:
+            info = identificar_geradora_e_beneficiaria(endereco, ucs_cliente, mapa_beneficiaria_usina, mapa_usina_geradora)
+            if not nuc_atual and info["nuc_real"]:
+                updates.append({"range": f"{_coluna_letra(COLUNA_NUC_REAL)}{i}", "values": [[info["nuc_real"]]]})
+                clientes_afetados.add(cliente)
+            if not cod_benef_atual and info["cod_beneficiaria"]:
+                updates.append({"range": f"{_coluna_letra(COLUNA_COD_BENEFICIARIA)}{i}", "values": [[info["cod_beneficiaria"]]]})
+                updates.append({"range": f"{_coluna_letra(COLUNA_NUC_BENEFICIARIA)}{i}", "values": [[info["nuc_beneficiaria"]]]})
+                updates.append({"range": f"{_coluna_letra(COLUNA_ENDERECO_BENEFICIARIA)}{i}", "values": [[info["endereco_beneficiaria"]]]})
+                clientes_afetados.add(cliente)
+            if not cod_ger_atual and info["cod_geradora"]:
+                updates.append({"range": f"{_coluna_letra(COLUNA_COD_GERADORA)}{i}", "values": [[info["cod_geradora"]]]})
+                updates.append({"range": f"{_coluna_letra(COLUNA_NUC_GERADORA)}{i}", "values": [[info["nuc_geradora"]]]})
+                updates.append({"range": f"{_coluna_letra(COLUNA_ENDERECO_GERADORA)}{i}", "values": [[info["endereco_geradora"]]]})
+                clientes_afetados.add(cliente)
+
+        if not alerta_atual:
+            alerta_texto = calcular_alerta(situacao, prazo, hist_prazo)
+            if alerta_texto:
+                updates.append({"range": f"{_coluna_letra(COLUNA_ALERTA)}{i}", "values": [[alerta_texto]]})
                 clientes_afetados.add(cliente)
 
         nome_cliente = ucs_cliente[0].get("nome_cliente", "")
         if not razao_atual and nome_cliente:
-            updates.append({"range": f"Y{i}", "values": [[nome_cliente]]})
+            updates.append({"range": f"{_coluna_letra(COLUNA_RAZAO_SOCIAL)}{i}", "values": [[nome_cliente]]})
             clientes_afetados.add(cliente)
 
     if updates:
