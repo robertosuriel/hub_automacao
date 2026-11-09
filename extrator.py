@@ -137,46 +137,103 @@ def configurar_driver():
         diagnosticar_chrome()
         raise
 
-def realizar_login_selenium_original(driver, login_user, login_password, cliente):
+_XP_BOTAO_LOGIN = "/html/body/app-root/app-header/header/nav/div[1]/div/div/button/span[1]"
+_XP_FORM = "/html/body/div[2]/div[2]/div/mat-dialog-container/app-dialog-login/mat-dialog-content/section/form/mat-horizontal-stepper/div[2]/div/div"
+
+def _esperar_elemento(driver, localizadores, timeout=30, habilitado=False):
+    """Espera o primeiro localizador que aparecer visível (e habilitado, se pedido); None se esgotar o tempo."""
+    def _achar(d):
+        for by, valor in localizadores:
+            try:
+                for el in d.find_elements(by, valor):
+                    if el.is_displayed() and (not habilitado or el.is_enabled()):
+                        return el
+            except Exception:
+                pass
+        return False
     try:
-        print("  [LOG] Clicando no botão Entrar superior...")
-        login_button = driver.find_element(By.XPATH, "/html/body/app-root/app-header/header/nav/div[1]/div/div/button/span[1]")
-        login_button.click()
-        time.sleep(3)
+        return WebDriverWait(driver, timeout).until(_achar)
     except Exception:
-        driver.save_screenshot(f"erro_botao_{cliente}.png")
-        pass 
+        return None
+
+def _clicar(driver, el):
+    try:
+        el.click()
+    except Exception:
+        driver.execute_script("arguments[0].click();", el)
+
+def _diagnosticar_pagina(driver):
+    try:
+        corpo = driver.find_element(By.TAG_NAME, "body").text.replace(chr(10), " ")[:200]
+        print(f"  [DIAG] url={driver.current_url} titulo={driver.title!r} corpo={corpo!r}")
+        if "access denied" in driver.page_source.lower()[:5000]:
+            print("  [DIAG] A Coelba bloqueou o acesso (Access Denied / WAF).")
+    except Exception as e:
+        print(f"  [DIAG] falha ao ler a pagina: {type(e).__name__}")
+
+def realizar_login_selenium_original(driver, login_user, login_password, cliente):
+    # Seletores por id/title (estaveis); os XPaths absolutos antigos ficam como reserva.
+    loc_usuario = [(By.ID, "userId"), (By.XPATH, _XP_FORM + "/mat-form-field[1]/div/div[1]/div[3]/input")]
+    loc_senha = [(By.ID, "password"), (By.XPATH, _XP_FORM + "/mat-form-field[2]/div/div[1]/div[3]/input")]
+    loc_entrar = [(By.CSS_SELECTOR, "mat-dialog-container button[title='Entrar']"), (By.XPATH, _XP_FORM + "/div[3]/app-neo-button/button")]
 
     try:
-        print(f"  [LOG] Preenchendo CNPJ e Senha...")
-        email_field = driver.find_element(By.XPATH, "/html/body/div[2]/div[2]/div/mat-dialog-container/app-dialog-login/mat-dialog-content/section/form/mat-horizontal-stepper/div[2]/div/div/mat-form-field[1]/div/div[1]/div[3]/input")
-        email_field.clear()
-        email_field.send_keys(login_user)
-        time.sleep(1)
+        print("  [LOG] Abrindo o formulario de login...")
+        campo_usuario = None
+        for _ in range(2):
+            botao = _esperar_elemento(driver, [(By.CSS_SELECTOR, "button.btn-login"), (By.XPATH, _XP_BOTAO_LOGIN)], timeout=30, habilitado=True)
+            if botao is None:
+                print("  ⚠️ Botao de login do topo nao apareceu.")
+                driver.save_screenshot(f"erro_botao_{cliente}.png")
+                _diagnosticar_pagina(driver)
+                return None
+            _clicar(driver, botao)
+            campo_usuario = _esperar_elemento(driver, loc_usuario, timeout=20)
+            if campo_usuario is not None:
+                break
+            print("  ⚠️ O formulario nao abriu; clicando de novo...")
 
-        password_field = driver.find_element(By.XPATH, "/html/body/div[2]/div[2]/div/mat-dialog-container/app-dialog-login/mat-dialog-content/section/form/mat-horizontal-stepper/div[2]/div/div/mat-form-field[2]/div/div[1]/div[3]/input")
-        password_field.clear()
-        password_field.send_keys(login_password)
-        time.sleep(1)
+        if campo_usuario is None:
+            print("  ❌ Campo de CNPJ/CPF nao apareceu.")
+            driver.save_screenshot(f"erro_fatal_{cliente}.png")
+            _diagnosticar_pagina(driver)
+            return None
+
+        print("  [LOG] Preenchendo CNPJ e Senha...")
+        campo_usuario.clear()
+        campo_usuario.send_keys(login_user)
+        campo_senha = _esperar_elemento(driver, loc_senha, timeout=15)
+        if campo_senha is None:
+            print("  ❌ Campo de senha nao apareceu.")
+            driver.save_screenshot(f"erro_fatal_{cliente}.png")
+            _diagnosticar_pagina(driver)
+            return None
+        campo_senha.clear()
+        campo_senha.send_keys(login_password)
 
         print("  [LOG] Clicando em confirmar...")
-        submit_button = driver.find_element(By.XPATH, "/html/body/div[2]/div[2]/div/mat-dialog-container/app-dialog-login/mat-dialog-content/section/form/mat-horizontal-stepper/div[2]/div/div/div[3]/app-neo-button/button/div")
-        submit_button.click()
-        
-        time.sleep(2) 
-        
-        for i in range(20):
+        botao_entrar = _esperar_elemento(driver, loc_entrar, timeout=20, habilitado=True)
+        if botao_entrar is None:
+            print("  ❌ O botao Entrar nao habilitou (CNPJ/senha nao validados).")
+            driver.save_screenshot(f"erro_fatal_{cliente}.png")
+            _diagnosticar_pagina(driver)
+            return None
+        _clicar(driver, botao_entrar)
+
+        for _ in range(30):
             token = driver.execute_script("return window.localStorage.getItem('tokenNeSe');")
             if token:
                 return token
             time.sleep(1)
-            
+
         print("  ❌ Token não veio. Tirando foto da tela...")
         driver.save_screenshot(f"erro_sem_token_{cliente}.png")
+        _diagnosticar_pagina(driver)
         return None
     except Exception as e:
-        print(f"  ❌ Erro fatal no formulário: {e}")
+        print(f"  ❌ Erro fatal no formulário: {type(e).__name__}: {str(e)[:200]}")
         driver.save_screenshot(f"erro_fatal_{cliente}.png")
+        _diagnosticar_pagina(driver)
         return None
 
 # --- RESTANTE DO CÓDIGO (Igual ao seu) ---
