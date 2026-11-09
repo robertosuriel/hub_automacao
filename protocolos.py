@@ -37,6 +37,52 @@ ABA_PROTOCOLOS = "Protocolos"
 ABA_UCS_DEPARA = "UCs (de-para)"
 CABECALHO_UCS_DEPARA = ["Cliente", "Codigo Cliente", "NUC", "Razao Social", "Endereco", "Bairro", "Municipio"]
 
+# --- Abertura de reclamação (Fale Conosco > Ouvidoria > Reclamação na Agência
+# Virtual) — mapeada manualmente em 2026-11-09. Ainda não existe automação que
+# submeta isso pra Coelba de verdade (o fluxo completo — E-mail, Dados
+# Adicionais, Envio — ainda está sendo mapeado); por enquanto o formulário do
+# Hub só grava aqui, numa fila, pra alguém enviar manualmente até a automação
+# de envio ficar pronta.
+ABA_FILA_RECLAMACOES = "Fila de Reclamações"
+CABECALHO_FILA_RECLAMACOES = [
+    "Status", "Data de Criação", "Criado por", "Cliente", "Codigo Cliente (UC)",
+    "Motivo Principal", "Detalhes do Motivo", "Relato da Manifestação", "Telefone para Contato",
+    "Mes de Referencia", "Data de Vencimento", "Valor da Fatura", "Protocolo Coelba",
+]
+STATUS_FILA_PENDENTE = "Pendente de envio"
+
+# Motivo Principal: as 18 opções exatas do dropdown da Ouvidoria. Detalhes do
+# Motivo depende do Motivo Principal escolhido — só "Faturas" foi mapeado até
+# agora (as outras categorias ainda não foram abertas pra listar as opções
+# delas); pra qualquer outro motivo o campo vira texto livre no formulário.
+MOTIVOS_PRINCIPAIS_RECLAMACAO = [
+    "Alteração Cadastral", "Apresentação/ Entrega de Contas", "Atendimento",
+    "Cobrança Indevida de Atividade Acessória", "Cobrança por Irregularidade",
+    "Danos Elétricos", "Erro de Leitura", "Faturas",
+    "Indisp. de Agência/Posto de Atendimento", "Interrupção do Fornecimento de Energia",
+    "Outros", "Prazos", "Problemas de instalação interna na UC", "Suspensão Indevida",
+    "Tarifas", "Tensão de Fornecimento", "Valores Mínimos Faturáveis", "Variação de Consumo",
+]
+DETALHES_MOTIVO_RECLAMACAO = {
+    "Faturas": [
+        "Ausência de faturamento", "BANDEIRAS TARIFÁRIAS",
+        "Bônus de redução voluntária no consumo", "Classificação tarifária incorreta",
+        "Cob Outros Serviços/Exclusão ñ realizada", "Cobrança Arts. 115 ou 175 Res. 414/10",
+        "Cobrança Indevida Déb Terceiros/Anterior", "Compensação GD", "Critérios de faturamento",
+        "Defeito na impressão", "Encargos / tributos incorretos",
+        "Falta/erro inform obrigatórias na fatura", "Faturamento GD",
+        "Faturamento Incorreto/Valores Faturados", "FATURAMENTO MICROGERAÇÃO",
+        "Intervalo de faturamento incorreto", "Multas, Juros e Out. taxas cobradas(CIP)",
+        "NENHUMA DAS ANTERIORES", "Pagamento em duplicidade", "Parcelamento de Débitos",
+        "Perda de benefício irrig./Baixa Renda", "Proporcionalização de tarifa",
+        "Relatórios GD", "Remanejamento de Leitura", "Tarifa Branca",
+        "Tarifa errada qdo. Da Reclassificação UC",
+    ],
+}
+# Motivos que, no site da Coelba, abrem um passo extra pedindo dados da
+# fatura (mês de referência, vencimento, valor) antes de seguir.
+MOTIVOS_COM_PASSO_FATURA = {"Faturas"}
+
 # Abas da planilha de controle (mesma usada pelo módulo de Faturas) com o
 # de-para de usina geradora. "clienteContato" liga cada UC beneficiária (via
 # código do cliente) ao nome da usina que gera a energia dela; "unidadesGeradoras"
@@ -725,6 +771,33 @@ def atualizar_aba_ucs_depara(planilha, cliente, ucs):
         aba.update(range_name="A2", values=todas_linhas, value_input_option="RAW")
 
     _estilizar_aba_simples(planilha, aba, len(CABECALHO_UCS_DEPARA), len(todas_linhas) + 1)
+
+
+def registrar_reclamacao_na_fila(cliente, uc_codigo, motivo_principal, detalhes_motivo, relato,
+                                   telefone, mes_referencia="", data_vencimento="", valor_fatura="",
+                                   criado_por=""):
+    """Grava uma reclamação rascunhada pelo formulário do Hub na aba 'Fila de
+    Reclamações', com status 'Pendente de envio'. Ainda não existe automação
+    que envie isso pra Coelba de verdade (ver nota em ABA_FILA_RECLAMACOES) —
+    alguém da equipe precisa abrir manualmente até essa parte ficar pronta."""
+    client = autenticar_google_sheets()
+    planilha = client.open_by_key(PROTOCOLOS_SPREADSHEET_ID)
+    try:
+        aba = planilha.worksheet(ABA_FILA_RECLAMACOES)
+    except Exception:
+        aba = planilha.add_worksheet(title=ABA_FILA_RECLAMACOES, rows=200, cols=len(CABECALHO_FILA_RECLAMACOES))
+        aba.update(range_name="A1", values=[CABECALHO_FILA_RECLAMACOES], value_input_option="RAW")
+
+    linha = [
+        STATUS_FILA_PENDENTE, datetime.now().strftime("%d/%m/%Y %H:%M"), criado_por,
+        cliente.upper(), uc_codigo, motivo_principal, detalhes_motivo, relato, telefone,
+        mes_referencia, data_vencimento, valor_fatura, "",
+    ]
+    aba.append_rows([linha], value_input_option="USER_ENTERED", table_range="A1")
+
+    total_linhas = len(aba.get_all_values())
+    _estilizar_aba_simples(planilha, aba, len(CABECALHO_FILA_RECLAMACOES), total_linhas, largura_colunas=160)
+    return True
 
 
 def obter_ou_criar_aba_cliente(planilha, cliente, cabecalho):

@@ -18,7 +18,8 @@ from extrator import processar_cliente
 from gerador_pagos import processar_faturas_pagas, gerar_pdf_pago_upload
 from protocolos import (
     processar_protocolos, carregar_dataframe_protocolos, backfillar_colunas_derivadas,
-    sincronizar_todos_os_clientes, RESPONSAVEIS,
+    sincronizar_todos_os_clientes, RESPONSAVEIS, registrar_reclamacao_na_fila,
+    MOTIVOS_PRINCIPAIS_RECLAMACAO, DETALHES_MOTIVO_RECLAMACAO, MOTIVOS_COM_PASSO_FATURA,
 )
 
 load_dotenv(".env")
@@ -130,7 +131,10 @@ st.sidebar.title("🛠️ Ferramentas")
 st.sidebar.markdown("---")
 modulo_selecionado = st.sidebar.radio(
     "Escolha o processo:",
-    ["1. Extrair Faturas (Coelba)", "2. Gerar PDFs 'PAGO'", "3. Acompanhar Protocolos (Coelba)"]
+    [
+        "1. Extrair Faturas (Coelba)", "2. Gerar PDFs 'PAGO'", "3. Acompanhar Protocolos (Coelba)",
+        "4. Abrir Reclamação (Coelba)",
+    ]
 )
 
 # --- ÁREA PRINCIPAL COM O NOVO HEADER ---
@@ -143,17 +147,18 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 
-# --- OPÇÕES DE SELEÇÃO DE CLIENTES ---
-col1, col2 = st.columns([1, 2])
-with col1:
-    modo = st.radio("Modo de Execução:", ["Rodar Todos", "Selecionar Específicos"])
+# --- OPÇÕES DE SELEÇÃO DE CLIENTES (módulos 1-3, que processam clientes em lote) ---
+if "Abrir Reclamação" not in modulo_selecionado:
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        modo = st.radio("Modo de Execução:", ["Rodar Todos", "Selecionar Específicos"])
 
-with col2:
-    if modo == "Rodar Todos":
-        clientes_selecionados = clientes_disponiveis
-        st.info("Todos os clientes serão processados na sequência.")
-    else:
-        clientes_selecionados = st.multiselect("Selecione os clientes:", clientes_disponiveis, default=[clientes_disponiveis[0]])
+    with col2:
+        if modo == "Rodar Todos":
+            clientes_selecionados = clientes_disponiveis
+            st.info("Todos os clientes serão processados na sequência.")
+        else:
+            clientes_selecionados = st.multiselect("Selecione os clientes:", clientes_disponiveis, default=[clientes_disponiveis[0]])
 
 
 # ==========================================
@@ -673,3 +678,93 @@ elif "Acompanhar Protocolos" in modulo_selecionado:
                     st.dataframe(finalizadas_recentes[cols], use_container_width=True, hide_index=True)
     else:
         st.info("Nenhum protocolo na planilha ainda. Rode a consulta acima pra começar a popular.")
+
+# ==========================================
+# MÓDULO 4: ABRIR RECLAMAÇÃO (COELBA)
+# ==========================================
+elif "Abrir Reclamação" in modulo_selecionado:
+    st.markdown(
+        "Preencha os dados abaixo pra registrar uma reclamação. **Por enquanto, ainda não enviamos "
+        "automaticamente pra Coelba** — o robô pra isso ainda está sendo mapeado. A reclamação cai numa "
+        "fila ('Fila de Reclamações' na planilha) com status *Pendente de envio*, pra alguém da equipe "
+        "abrir manualmente até a automação ficar pronta."
+    )
+    st.divider()
+
+    # Nota: não usamos st.form aqui de propósito — widgets dentro de um form só
+    # disparam rerun no submit, e precisamos que "Detalhes do Motivo" e os campos
+    # de fatura reajam IMEDIATAMENTE à escolha do Motivo Principal.
+    if "reclamacao_form_versao" not in st.session_state:
+        st.session_state["reclamacao_form_versao"] = 0
+    versao = st.session_state["reclamacao_form_versao"]
+
+    col1, col2 = st.columns(2)
+    with col1:
+        cliente_reclamacao = st.selectbox("Cliente:", clientes_disponiveis, key=f"rec_cliente_{versao}")
+    with col2:
+        uc_codigo_reclamacao = st.text_input("Código do cliente (UC):", key=f"rec_uc_{versao}")
+
+    motivo_principal = st.selectbox("Motivo Principal:", MOTIVOS_PRINCIPAIS_RECLAMACAO, key=f"rec_motivo_{versao}")
+
+    opcoes_detalhe = DETALHES_MOTIVO_RECLAMACAO.get(motivo_principal, [])
+    if opcoes_detalhe:
+        detalhes_motivo = st.selectbox("Detalhes do Motivo:", opcoes_detalhe, key=f"rec_detalhe_sel_{versao}")
+    else:
+        detalhes_motivo = st.text_input(
+            "Detalhes do Motivo:",
+            key=f"rec_detalhe_txt_{versao}",
+            help="Esse motivo ainda não tem as opções da Coelba mapeadas — descreva em texto livre.",
+        )
+
+    relato = st.text_area("Relato da Manifestação:", height=120, key=f"rec_relato_{versao}")
+    telefone = st.text_input("Telefone para Contato:", key=f"rec_telefone_{versao}")
+
+    mes_referencia, data_vencimento, valor_fatura = "", "", ""
+    if motivo_principal in MOTIVOS_COM_PASSO_FATURA:
+        st.markdown("**Dados da fatura** (necessários pro motivo selecionado)")
+        colf1, colf2, colf3 = st.columns(3)
+        with colf1:
+            mes_referencia = st.text_input("Mês de Referência:", placeholder="ex: 10/2026", key=f"rec_mes_{versao}")
+        with colf2:
+            data_vencimento = st.text_input("Data de Vencimento:", placeholder="dd/mm/aaaa", key=f"rec_venc_{versao}")
+        with colf3:
+            valor_fatura = st.text_input("Valor da Fatura:", placeholder="ex: 350,00", key=f"rec_valor_{versao}")
+
+    if st.button("📝 Registrar na Fila", type="primary", use_container_width=True):
+        if not uc_codigo_reclamacao or not relato or not telefone:
+            st.warning("⚠️ Preencha ao menos Código do cliente (UC), Relato e Telefone.")
+        else:
+            try:
+                registrar_reclamacao_na_fila(
+                    cliente=cliente_reclamacao,
+                    uc_codigo=uc_codigo_reclamacao,
+                    motivo_principal=motivo_principal,
+                    detalhes_motivo=detalhes_motivo,
+                    relato=relato,
+                    telefone=telefone,
+                    mes_referencia=mes_referencia,
+                    data_vencimento=data_vencimento,
+                    valor_fatura=valor_fatura,
+                    criado_por=st.session_state.get("usuario_atual", ""),
+                )
+                st.success("✅ Reclamação registrada na fila! Status: Pendente de envio.")
+                st.session_state["reclamacao_form_versao"] += 1
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Erro ao registrar na fila: {e}")
+
+    st.divider()
+    st.subheader("📋 Fila de Reclamações")
+    try:
+        from protocolos import autenticar_google_sheets, PROTOCOLOS_SPREADSHEET_ID, ABA_FILA_RECLAMACOES
+        _client = autenticar_google_sheets()
+        _planilha = _client.open_by_key(PROTOCOLOS_SPREADSHEET_ID)
+        _aba_fila = _planilha.worksheet(ABA_FILA_RECLAMACOES)
+        _valores_fila = _aba_fila.get_all_values()
+        if len(_valores_fila) > 1:
+            df_fila = pd.DataFrame(_valores_fila[1:], columns=_valores_fila[0])
+            st.dataframe(df_fila, use_container_width=True, hide_index=True)
+        else:
+            st.info("Fila vazia por enquanto.")
+    except Exception:
+        st.info("A aba 'Fila de Reclamações' ainda não existe — ela é criada automaticamente no primeiro registro.")
