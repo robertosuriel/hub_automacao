@@ -691,12 +691,6 @@ elif "Acompanhar Protocolos" in modulo_selecionado:
 # MÓDULO 4: ABRIR RECLAMAÇÃO (COELBA)
 # ==========================================
 elif "Abrir Reclamação" in modulo_selecionado:
-    st.markdown(
-        "Fluxo revisado com o time em 13/11: escolha o tipo de solicitação, selecione a(s) UC(s) "
-        "(agrupando por usina quando for o caso) e preencha os campos da Coelba. **Ainda não enviamos "
-        "automaticamente pra Coelba** — cada chamado cai na 'Fila de Reclamações' com status "
-        "*Pendente de envio*, pra alguém da equipe abrir manualmente até a automação ficar pronta."
-    )
     st.divider()
 
     if "rec_step" not in st.session_state:
