@@ -44,12 +44,23 @@ CABECALHO_UCS_DEPARA = ["Cliente", "Codigo Cliente", "NUC", "Razao Social", "End
 # Hub só grava aqui, numa fila, pra alguém enviar manualmente até a automação
 # de envio ficar pronta.
 ABA_FILA_RECLAMACOES = "Fila de Reclamações"
+# Estrutura revisada em 2026-11-13 com a equipe (reunião "Automatização de
+# Abertura de Chamados"): o fluxo de seleção agora é Tipo de solicitação ->
+# Beneficiária/Geradora -> busca (nome/NUC/usina) -> confirmação, podendo
+# cobrir mais de uma UC por chamado quando elas são da mesma usina/CNPJ
+# (a Coelba exige agrupar nesse caso). Uma linha nessa fila == um chamado
+# real a abrir (já agrupado); "UCs Incluidas" guarda todas as UCs cobertas.
 CABECALHO_FILA_RECLAMACOES = [
-    "Status", "Data de Criação", "Criado por", "Cliente", "Codigo Cliente (UC)",
-    "Motivo Principal", "Detalhes do Motivo", "Relato da Manifestação", "Telefone para Contato",
-    "Mes de Referencia", "Data de Vencimento", "Valor da Fatura", "Protocolo Coelba",
+    "Status", "Data de Criação", "Criado por", "Tipo de Solicitação",
+    "Beneficiária ou Geradora", "Cliente", "UCs Incluidas", "Usina Atrelada",
+    "Motivo Principal", "Detalhes do Motivo", "Relato da Manifestação",
+    "Telefone para Contato", "Ponto de Referencia", "Protocolo Anterior",
+    "Responsável por Abrir", "Observação", "Mes de Referencia",
+    "Data de Vencimento", "Valor da Fatura", "Protocolo Coelba",
 ]
 STATUS_FILA_PENDENTE = "Pendente de envio"
+
+TIPOS_SOLICITACAO_RECLAMACAO = ["Ouvidoria (Reclamação)", "Falta de Energia"]
 
 # Motivo Principal: as 18 opções exatas do dropdown da Ouvidoria. Detalhes do
 # Motivo depende do Motivo Principal escolhido — só "Faturas" foi mapeado até
@@ -773,31 +784,98 @@ def atualizar_aba_ucs_depara(planilha, cliente, ucs):
     _estilizar_aba_simples(planilha, aba, len(CABECALHO_UCS_DEPARA), len(todas_linhas) + 1)
 
 
-def registrar_reclamacao_na_fila(cliente, uc_codigo, motivo_principal, detalhes_motivo, relato,
-                                   telefone, mes_referencia="", data_vencimento="", valor_fatura="",
-                                   criado_por=""):
-    """Grava uma reclamação rascunhada pelo formulário do Hub na aba 'Fila de
-    Reclamações', com status 'Pendente de envio'. Ainda não existe automação
-    que envie isso pra Coelba de verdade (ver nota em ABA_FILA_RECLAMACOES) —
-    alguém da equipe precisa abrir manualmente até essa parte ficar pronta."""
+def registrar_reclamacao_na_fila(tipo_solicitacao, beneficiaria_ou_geradora, cliente, ucs_incluidas,
+                                   usina, motivo_principal, detalhes_motivo, relato, telefone,
+                                   ponto_referencia="", protocolo_anterior="", responsavel="",
+                                   observacao="", mes_referencia="", data_vencimento="",
+                                   valor_fatura="", criado_por=""):
+    """Grava um chamado rascunhado pelo formulário do Hub na aba 'Fila de
+    Reclamações', com status 'Pendente de envio'. Uma chamada == um chamado
+    real a abrir na Coelba; `ucs_incluidas` já vem com todas as UCs cobertas
+    por ele (agrupadas pelo chamador quando são da mesma usina/CNPJ — a Coelba
+    exige isso nesse caso). Ainda não existe automação que envie isso pra
+    Coelba de verdade (ver nota em ABA_FILA_RECLAMACOES) — alguém da equipe
+    precisa abrir manualmente até essa parte ficar pronta."""
     client = autenticar_google_sheets()
     planilha = client.open_by_key(PROTOCOLOS_SPREADSHEET_ID)
     try:
         aba = planilha.worksheet(ABA_FILA_RECLAMACOES)
+        cabecalho_atual = aba.row_values(1)
+        if cabecalho_atual != CABECALHO_FILA_RECLAMACOES:
+            # Estrutura da fila mudou (ver histórico de ABA_FILA_RECLAMACOES) —
+            # essa aba ainda não tem uso real em produção, então é seguro
+            # limpar e recomeçar com o cabeçalho atual em vez de ficar com
+            # colunas desalinhadas.
+            aba.clear()
+            aba.update(range_name="A1", values=[CABECALHO_FILA_RECLAMACOES], value_input_option="RAW")
     except Exception:
         aba = planilha.add_worksheet(title=ABA_FILA_RECLAMACOES, rows=200, cols=len(CABECALHO_FILA_RECLAMACOES))
         aba.update(range_name="A1", values=[CABECALHO_FILA_RECLAMACOES], value_input_option="RAW")
 
     linha = [
         STATUS_FILA_PENDENTE, datetime.now().strftime("%d/%m/%Y %H:%M"), criado_por,
-        cliente.upper(), uc_codigo, motivo_principal, detalhes_motivo, relato, telefone,
-        mes_referencia, data_vencimento, valor_fatura, "",
+        tipo_solicitacao, beneficiaria_ou_geradora, cliente.upper(), ucs_incluidas, usina,
+        motivo_principal, detalhes_motivo, relato, telefone, ponto_referencia,
+        protocolo_anterior, responsavel, observacao, mes_referencia, data_vencimento,
+        valor_fatura, "",
     ]
     aba.append_rows([linha], value_input_option="USER_ENTERED", table_range="A1")
 
     total_linhas = len(aba.get_all_values())
     _estilizar_aba_simples(planilha, aba, len(CABECALHO_FILA_RECLAMACOES), total_linhas, largura_colunas=160)
     return True
+
+
+def construir_catalogo_ucs(client_sheets=None):
+    """Monta o catálogo de UCs pra alimentar a busca do módulo 'Abrir
+    Reclamação' (Nome Cliente / NUC / Usina Atrelada), a partir da aba
+    'UCs (de-para)' (já preenchida pelos módulos de Faturas/Protocolos, sem
+    precisar logar de novo na Coelba) cruzada com o mapa de geradoras. Cada
+    item: cliente, uc_codigo, nuc, razao_social, endereco, usina (vazio se a
+    UC não for beneficiária de nenhuma usina), eh_geradora (bool)."""
+    client_sheets = client_sheets or autenticar_google_sheets()
+    beneficiaria_para_usina, usina_para_geradora = carregar_mapa_geradoras(client_sheets)
+    codigos_geradoras = set(usina_para_geradora.values())
+
+    planilha = client_sheets.open_by_key(PROTOCOLOS_SPREADSHEET_ID)
+    try:
+        valores = planilha.worksheet(ABA_UCS_DEPARA).get_all_values()
+    except Exception:
+        return []
+
+    catalogo = []
+    for linha in valores[1:]:
+        if len(linha) < len(CABECALHO_UCS_DEPARA) or not linha[0].strip():
+            continue
+        cliente, uc_codigo, nuc, razao_social, endereco, bairro, municipio = linha[:7]
+        codigo_norm = normalizar_numero(uc_codigo)
+        catalogo.append({
+            "cliente": cliente,
+            "uc_codigo": uc_codigo,
+            "nuc": nuc,
+            "razao_social": razao_social,
+            "endereco": ", ".join(p for p in [endereco, bairro, municipio] if p),
+            "usina": beneficiaria_para_usina.get(codigo_norm, ""),
+            "eh_geradora": codigo_norm in codigos_geradoras,
+        })
+    return catalogo
+
+
+def contar_chamados_por_uc(df_protocolos):
+    """Conta quantas linhas da aba 'Protocolos' já referenciam cada UC (como
+    beneficiária ou como geradora), pra mostrar 'Nº de chamados já abertos'
+    na tela de abrir reclamação. Retorna dict normalizar_numero(codigo) -> int."""
+    contagem = {}
+    if df_protocolos is None or df_protocolos.empty:
+        return contagem
+    for coluna in ["Codigo Cliente Beneficiaria", "Codigo Cliente Geradora"]:
+        if coluna not in df_protocolos.columns:
+            continue
+        for valor in df_protocolos[coluna]:
+            codigo = normalizar_numero(str(valor)) if valor else ""
+            if codigo:
+                contagem[codigo] = contagem.get(codigo, 0) + 1
+    return contagem
 
 
 def obter_ou_criar_aba_cliente(planilha, cliente, cabecalho):

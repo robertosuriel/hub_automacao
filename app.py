@@ -4,8 +4,14 @@ import re
 import sys
 import threading
 import json
+import unicodedata
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
+
+
+def _sem_acento(texto):
+    """Remove acentos pra busca não-sensível a acento (ex: 'itaguacu' acha 'Itaguaçu')."""
+    return unicodedata.normalize("NFKD", texto or "").encode("ascii", "ignore").decode("ascii").lower()
 
 # --- TRUQUE DE SEGURANÇA PARA A NUVEM ---
 if "google_credentials" in st.secrets:
@@ -20,6 +26,8 @@ from protocolos import (
     processar_protocolos, carregar_dataframe_protocolos, backfillar_colunas_derivadas,
     sincronizar_todos_os_clientes, RESPONSAVEIS, registrar_reclamacao_na_fila,
     MOTIVOS_PRINCIPAIS_RECLAMACAO, DETALHES_MOTIVO_RECLAMACAO, MOTIVOS_COM_PASSO_FATURA,
+    TIPOS_SOLICITACAO_RECLAMACAO, construir_catalogo_ucs, contar_chamados_por_uc,
+    normalizar_numero, autenticar_google_sheets, PROTOCOLOS_SPREADSHEET_ID, ABA_FILA_RECLAMACOES,
 )
 
 load_dotenv(".env")
@@ -684,79 +692,231 @@ elif "Acompanhar Protocolos" in modulo_selecionado:
 # ==========================================
 elif "Abrir Reclamação" in modulo_selecionado:
     st.markdown(
-        "Preencha os dados abaixo pra registrar uma reclamação. **Por enquanto, ainda não enviamos "
-        "automaticamente pra Coelba** — o robô pra isso ainda está sendo mapeado. A reclamação cai numa "
-        "fila ('Fila de Reclamações' na planilha) com status *Pendente de envio*, pra alguém da equipe "
-        "abrir manualmente até a automação ficar pronta."
+        "Fluxo revisado com o time em 13/11: escolha o tipo de solicitação, selecione a(s) UC(s) "
+        "(agrupando por usina quando for o caso) e preencha os campos da Coelba. **Ainda não enviamos "
+        "automaticamente pra Coelba** — cada chamado cai na 'Fila de Reclamações' com status "
+        "*Pendente de envio*, pra alguém da equipe abrir manualmente até a automação ficar pronta."
     )
     st.divider()
 
-    # Nota: não usamos st.form aqui de propósito — widgets dentro de um form só
-    # disparam rerun no submit, e precisamos que "Detalhes do Motivo" e os campos
-    # de fatura reajam IMEDIATAMENTE à escolha do Motivo Principal.
-    if "reclamacao_form_versao" not in st.session_state:
-        st.session_state["reclamacao_form_versao"] = 0
-    versao = st.session_state["reclamacao_form_versao"]
+    if "rec_step" not in st.session_state:
+        st.session_state.rec_step = 1
+    if "rec_selecionados" not in st.session_state:
+        st.session_state.rec_selecionados = {}  # uc_codigo -> item do catálogo
 
-    col1, col2 = st.columns(2)
-    with col1:
-        cliente_reclamacao = st.selectbox("Cliente:", clientes_disponiveis, key=f"rec_cliente_{versao}")
-    with col2:
-        uc_codigo_reclamacao = st.text_input("Código do cliente (UC):", key=f"rec_uc_{versao}")
+    def _reiniciar_fluxo_reclamacao():
+        st.session_state.rec_step = 1
+        st.session_state.rec_selecionados = {}
+        for chave in ["rec_tipo", "rec_papel", "rec_catalogo", "rec_contagem"]:
+            st.session_state.pop(chave, None)
 
-    motivo_principal = st.selectbox("Motivo Principal:", MOTIVOS_PRINCIPAIS_RECLAMACAO, key=f"rec_motivo_{versao}")
+    col_step, col_reset = st.columns([4, 1])
+    with col_step:
+        st.caption(f"Passo {st.session_state.rec_step} de 5")
+    with col_reset:
+        if st.button("🔄 Reiniciar fluxo", use_container_width=True):
+            _reiniciar_fluxo_reclamacao()
+            st.rerun()
 
-    opcoes_detalhe = DETALHES_MOTIVO_RECLAMACAO.get(motivo_principal, [])
-    if opcoes_detalhe:
-        detalhes_motivo = st.selectbox("Detalhes do Motivo:", opcoes_detalhe, key=f"rec_detalhe_sel_{versao}")
-    else:
-        detalhes_motivo = st.text_input(
-            "Detalhes do Motivo:",
-            key=f"rec_detalhe_txt_{versao}",
-            help="Esse motivo ainda não tem as opções da Coelba mapeadas — descreva em texto livre.",
-        )
+    # --- Passo 1: Tipo de solicitação ---
+    if st.session_state.rec_step == 1:
+        st.subheader("1. Tipo de solicitação")
+        tipo = st.radio("O chamado é de:", TIPOS_SOLICITACAO_RECLAMACAO, key="rec_tipo_radio")
+        if tipo == "Falta de Energia":
+            st.info("Esse fluxo ainda está em mapeamento — os campos abaixo podem mudar.")
+        if st.button("Avançar ▶️", type="primary"):
+            st.session_state.rec_tipo = tipo
+            st.session_state.rec_step = 2
+            st.rerun()
 
-    relato = st.text_area("Relato da Manifestação:", height=120, key=f"rec_relato_{versao}")
-    telefone = st.text_input("Telefone para Contato:", key=f"rec_telefone_{versao}")
-
-    mes_referencia, data_vencimento, valor_fatura = "", "", ""
-    if motivo_principal in MOTIVOS_COM_PASSO_FATURA:
-        st.markdown("**Dados da fatura** (necessários pro motivo selecionado)")
-        colf1, colf2, colf3 = st.columns(3)
-        with colf1:
-            mes_referencia = st.text_input("Mês de Referência:", placeholder="ex: 10/2026", key=f"rec_mes_{versao}")
-        with colf2:
-            data_vencimento = st.text_input("Data de Vencimento:", placeholder="dd/mm/aaaa", key=f"rec_venc_{versao}")
-        with colf3:
-            valor_fatura = st.text_input("Valor da Fatura:", placeholder="ex: 350,00", key=f"rec_valor_{versao}")
-
-    if st.button("📝 Registrar na Fila", type="primary", use_container_width=True):
-        if not uc_codigo_reclamacao or not relato or not telefone:
-            st.warning("⚠️ Preencha ao menos Código do cliente (UC), Relato e Telefone.")
-        else:
-            try:
-                registrar_reclamacao_na_fila(
-                    cliente=cliente_reclamacao,
-                    uc_codigo=uc_codigo_reclamacao,
-                    motivo_principal=motivo_principal,
-                    detalhes_motivo=detalhes_motivo,
-                    relato=relato,
-                    telefone=telefone,
-                    mes_referencia=mes_referencia,
-                    data_vencimento=data_vencimento,
-                    valor_fatura=valor_fatura,
-                    criado_por=st.session_state.get("usuario_atual", ""),
-                )
-                st.success("✅ Reclamação registrada na fila! Status: Pendente de envio.")
-                st.session_state["reclamacao_form_versao"] += 1
+    # --- Passo 2: Beneficiária ou Geradora ---
+    elif st.session_state.rec_step == 2:
+        st.subheader("2. Beneficiária ou Geradora?")
+        papel = st.radio("O chamado é sobre uma:", ["Beneficiária", "Geradora"], key="rec_papel_radio")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("◀️ Voltar"):
+                st.session_state.rec_step = 1
                 st.rerun()
-            except Exception as e:
-                st.error(f"❌ Erro ao registrar na fila: {e}")
+        with c2:
+            if st.button("Avançar ▶️", type="primary"):
+                st.session_state.rec_papel = papel
+                st.session_state.rec_step = 3
+                st.rerun()
+
+    # --- Passo 3: Filtro / busca ---
+    elif st.session_state.rec_step == 3:
+        st.subheader("3. Buscar cliente / UC / usina")
+        if "rec_catalogo" not in st.session_state:
+            with st.spinner("Carregando catálogo de UCs..."):
+                st.session_state.rec_catalogo = construir_catalogo_ucs()
+                st.session_state.rec_contagem = contar_chamados_por_uc(carregar_dataframe_protocolos())
+
+        catalogo = st.session_state.rec_catalogo
+        contagem = st.session_state.rec_contagem
+        papel = st.session_state.get("rec_papel", "Beneficiária")
+        candidatos = [u for u in catalogo if u["eh_geradora"]] if papel == "Geradora" else [u for u in catalogo if u["usina"]]
+
+        termo = st.text_input("Buscar por nome do cliente, NUC ou usina:", key="rec_termo_busca")
+        if termo:
+            termo_norm = _sem_acento(termo.strip())
+            candidatos = [
+                u for u in candidatos
+                if termo_norm in _sem_acento(u["cliente"]) or termo_norm in _sem_acento(u["razao_social"])
+                or termo_norm in _sem_acento(u["uc_codigo"]) or termo_norm in _sem_acento(u["nuc"])
+                or termo_norm in _sem_acento(u["usina"])
+            ]
+
+        st.caption(f"{len(candidatos)} resultado(s). Marque um ou mais — dá pra refazer a busca sem perder o que já foi marcado.")
+        for item in candidatos[:60]:
+            codigo = item["uc_codigo"]
+            n_chamados = contagem.get(normalizar_numero(codigo), 0)
+            label = f"{item['cliente']} · {item['razao_social']} · UC {codigo} · NUC {item['nuc']}"
+            if item["usina"]:
+                label += f" · Usina: {item['usina']}"
+            label += f" · {n_chamados} chamado(s) já aberto(s)"
+            marcado = st.checkbox(label, value=codigo in st.session_state.rec_selecionados, key=f"rec_check_{codigo}")
+            if marcado:
+                st.session_state.rec_selecionados[codigo] = item
+            elif codigo in st.session_state.rec_selecionados:
+                del st.session_state.rec_selecionados[codigo]
+        if len(candidatos) > 60:
+            st.caption(f"Mostrando os 60 primeiros de {len(candidatos)} — refine a busca pra achar mais rápido.")
+
+        st.markdown(f"**{len(st.session_state.rec_selecionados)} selecionado(s) até agora.**")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("◀️ Voltar"):
+                st.session_state.rec_step = 2
+                st.rerun()
+        with c2:
+            if st.button("Avançar ▶️", type="primary", disabled=not st.session_state.rec_selecionados):
+                st.session_state.rec_step = 4
+                st.rerun()
+
+    # --- Passo 4: Confirmar seleção ---
+    elif st.session_state.rec_step == 4:
+        st.subheader("4. Confirmar seleção")
+        selecionados = list(st.session_state.rec_selecionados.values())
+        contagem = st.session_state.get("rec_contagem", {})
+        tabela = [{
+            "Nome Cliente": s["razao_social"] or s["cliente"],
+            "UC": s["uc_codigo"],
+            "NUC": s["nuc"],
+            "Usina Atrelada": s["usina"] or "—",
+            "Nº de chamados": contagem.get(normalizar_numero(s["uc_codigo"]), 0),
+        } for s in selecionados]
+        st.dataframe(pd.DataFrame(tabela), use_container_width=True, hide_index=True)
+
+        grupos = {}
+        for s in selecionados:
+            grupos.setdefault(s["usina"] or s["uc_codigo"], []).append(s)
+        if len(grupos) == 1 and len(selecionados) > 1:
+            st.success(f"Todas as UCs selecionadas são da mesma usina — isso vai virar **1 chamado** cobrindo as {len(selecionados)} UCs.")
+        elif len(grupos) > 1:
+            st.warning(f"As UCs selecionadas cobrem **{len(grupos)} usinas diferentes** — isso vai virar **{len(grupos)} chamados**, um por usina (a Coelba exige abrir separado nesse caso).")
+
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("◀️ Voltar"):
+                st.session_state.rec_step = 3
+                st.rerun()
+        with c2:
+            if st.button("Avançar ▶️", type="primary"):
+                st.session_state.rec_step = 5
+                st.rerun()
+
+    # --- Passo 5: Campos exigidos pela Coelba ---
+    elif st.session_state.rec_step == 5:
+        st.subheader("5. Preencher campos exigidos pela Coelba")
+        tipo = st.session_state.get("rec_tipo", TIPOS_SOLICITACAO_RECLAMACAO[0])
+        papel = st.session_state.get("rec_papel", "Beneficiária")
+        selecionados = list(st.session_state.rec_selecionados.values())
+        grupos = {}
+        for s in selecionados:
+            grupos.setdefault(s["usina"] or s["uc_codigo"], []).append(s)
+
+        motivo_principal = st.selectbox("Motivo Principal:", MOTIVOS_PRINCIPAIS_RECLAMACAO, key="rec5_motivo")
+        opcoes_detalhe = DETALHES_MOTIVO_RECLAMACAO.get(motivo_principal, [])
+        if opcoes_detalhe:
+            detalhes_motivo = st.selectbox("Detalhes do Motivo:", opcoes_detalhe, key="rec5_detalhe_sel")
+        else:
+            detalhes_motivo = st.text_input(
+                "Detalhes do Motivo:", key="rec5_detalhe_txt",
+                help="Esse motivo ainda não tem as opções da Coelba mapeadas — descreva em texto livre.",
+            )
+        relato = st.text_area("Relato da Manifestação:", height=120, key="rec5_relato")
+        telefone = st.text_input("Telefone para Contato:", value=os.getenv("TELEFONE_PADRAO_SOL", ""), key="rec5_telefone")
+
+        ponto_referencia = ""
+        if tipo == "Falta de Energia":
+            ponto_referencia = st.text_input("Ponto de Referência (poste / latitude,longitude):", key="rec5_ponto_ref")
+
+        protocolo_anterior = st.text_input("Protocolo anterior (se for o caso):", key="rec5_protocolo_anterior")
+        responsavel = st.selectbox("Responsável por abrir o chamado:", RESPONSAVEIS, key="rec5_responsavel")
+
+        if motivo_principal in MOTIVOS_COM_PASSO_FATURA:
+            st.markdown("**Dados da fatura** (necessários pro motivo selecionado)")
+            colf1, colf2, colf3 = st.columns(3)
+            with colf1:
+                mes_referencia = st.text_input("Mês de Referência:", placeholder="ex: 10/2026", key="rec5_mes")
+            with colf2:
+                data_vencimento = st.text_input("Data de Vencimento:", placeholder="dd/mm/aaaa", key="rec5_venc")
+            with colf3:
+                valor_fatura = st.text_input("Valor da Fatura:", placeholder="ex: 350,00", key="rec5_valor")
+        else:
+            mes_referencia = data_vencimento = valor_fatura = ""
+
+        st.caption(f"Isso vai gerar **{len(grupos)} chamado(s)** na fila (um por usina/UC agrupado).")
+
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("◀️ Voltar"):
+                st.session_state.rec_step = 4
+                st.rerun()
+        with c2:
+            if st.button("📝 Registrar na fila", type="primary"):
+                if not relato or not telefone:
+                    st.warning("⚠️ Preencha ao menos Relato e Telefone.")
+                else:
+                    erros = []
+                    for grupo in grupos.values():
+                        observacao = (
+                            f"Chamado aberto em conjunto para {len(grupo)} UCs da mesma usina: "
+                            + ", ".join(g["uc_codigo"] for g in grupo)
+                        ) if len(grupo) > 1 else ""
+                        try:
+                            registrar_reclamacao_na_fila(
+                                tipo_solicitacao=tipo,
+                                beneficiaria_ou_geradora=papel,
+                                cliente=grupo[0]["cliente"],
+                                ucs_incluidas=", ".join(g["uc_codigo"] for g in grupo),
+                                usina=grupo[0]["usina"],
+                                motivo_principal=motivo_principal,
+                                detalhes_motivo=detalhes_motivo,
+                                relato=relato,
+                                telefone=telefone,
+                                ponto_referencia=ponto_referencia,
+                                protocolo_anterior=protocolo_anterior,
+                                responsavel=responsavel,
+                                observacao=observacao,
+                                mes_referencia=mes_referencia,
+                                data_vencimento=data_vencimento,
+                                valor_fatura=valor_fatura,
+                                criado_por=responsavel,
+                            )
+                        except Exception as e:
+                            erros.append(str(e))
+                    if erros:
+                        st.error("❌ Erro ao registrar: " + "; ".join(erros))
+                    else:
+                        st.success(f"✅ {len(grupos)} chamado(s) registrado(s) na fila! Status: Pendente de envio.")
+                        _reiniciar_fluxo_reclamacao()
+                        st.rerun()
 
     st.divider()
     st.subheader("📋 Fila de Reclamações")
     try:
-        from protocolos import autenticar_google_sheets, PROTOCOLOS_SPREADSHEET_ID, ABA_FILA_RECLAMACOES
         _client = autenticar_google_sheets()
         _planilha = _client.open_by_key(PROTOCOLOS_SPREADSHEET_ID)
         _aba_fila = _planilha.worksheet(ABA_FILA_RECLAMACOES)
