@@ -950,10 +950,9 @@ def registrar_reclamacao_na_fila(tipo_solicitacao, beneficiaria_ou_geradora, cli
         protocolo_anterior, responsavel, observacao, mes_referencia, data_vencimento,
         valor_fatura, "",
     ]
-    # RAW (não USER_ENTERED): essa aba não tem fórmula nenhuma, e USER_ENTERED
-    # deixa o Sheets "ajudar" convertendo campos tipo UCs Incluidas em número e
-    # comendo o zero à esquerda (007099424626 virava 7099424626).
-    aba.append_rows([linha], value_input_option="RAW", table_range="A1")
+    # USER_ENTERED: time prefere ver os códigos de UC sem zero à esquerda
+    # (007099424626 -> 7099424626) nessa aba, por costume visual.
+    aba.append_rows([linha], value_input_option="USER_ENTERED", table_range="A1")
 
     total_linhas = len(aba.get_all_values())
     _estilizar_aba_simples(planilha, aba, len(CABECALHO_FILA_RECLAMACOES), total_linhas, largura_colunas=160)
