@@ -28,6 +28,7 @@ from protocolos import (
     MOTIVOS_PRINCIPAIS_RECLAMACAO, DETALHES_MOTIVO_RECLAMACAO, MOTIVOS_COM_PASSO_FATURA,
     TIPOS_SOLICITACAO_RECLAMACAO, construir_catalogo_ucs, contar_chamados_por_uc,
     normalizar_numero, autenticar_google_sheets, PROTOCOLOS_SPREADSHEET_ID, ABA_FILA_RECLAMACOES,
+    TELEFONES_RECLAMACAO, EMAILS_RECLAMACAO,
 )
 
 load_dotenv(".env")
@@ -852,11 +853,23 @@ elif "Abrir Reclamação" in modulo_selecionado:
                 help="Esse motivo ainda não tem as opções da Coelba mapeadas — descreva em texto livre.",
             )
         relato = st.text_area("Relato da Manifestação:", height=120, key="rec5_relato")
-        telefone = st.text_input("Telefone para Contato:", value=os.getenv("TELEFONE_PADRAO_SOL", ""), key="rec5_telefone")
-        email_resposta = st.text_input(
-            "E-mail para Resposta:", value=os.getenv("EMAIL_PADRAO_SOL", ""), key="rec5_email",
+
+        opcao_telefone = st.selectbox(
+            "Telefone para Contato:", TELEFONES_RECLAMACAO + ["Outro"], key="rec5_telefone_opcao",
+        )
+        if opcao_telefone == "Outro":
+            telefone = st.text_input("Digite o telefone:", key="rec5_telefone_outro")
+        else:
+            telefone = opcao_telefone
+
+        opcao_email = st.selectbox(
+            "E-mail para Resposta:", EMAILS_RECLAMACAO + ["Outro"], key="rec5_email_opcao",
             help="A Coelba pede um e-mail pra onde mandar a resposta da manifestação (confirmado no fluxo real em 13/11).",
         )
+        if opcao_email == "Outro":
+            email_resposta = st.text_input("Digite o e-mail:", key="rec5_email_outro")
+        else:
+            email_resposta = opcao_email
 
         ponto_referencia = ""
         if tipo == "Falta de Energia":

@@ -274,6 +274,17 @@ COLUNAS_MANUAIS_INDICE = {
 
 RESPONSAVEIS = ["-", "Leticia", "Mariane", "Monalisa", "Andressa"]
 
+# Telefones de contato pré-cadastrados pro formulário de Abrir Reclamação —
+# a pessoa escolhe um desses ou digita outro (ver TELEFONE_OUTRO_RECLAMACAO
+# no app.py).
+TELEFONES_RECLAMACAO = [
+    "19997630644", "71996654848", "21966884059", "71991246073", "71996534933",
+]
+
+# E-mail padrão pra onde a Coelba manda a resposta da manifestação — a pessoa
+# pode trocar por outro na hora (ver seletor "Outro" no app.py).
+EMAILS_RECLAMACAO = ["leticiasolonline@gmail.com", "financeiro@bluesolutionsgroup.com"]
+
 COR_HEADER = {"red": 0.043, "green": 0.42, "blue": 0.278}  # #0B6B47
 COR_BANDA_PAR = {"red": 0.933, "green": 0.965, "blue": 0.945}
 COR_BORDA = {"color": {"red": 0.85, "green": 0.85, "blue": 0.85}, "style": "SOLID"}
