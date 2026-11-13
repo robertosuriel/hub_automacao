@@ -803,13 +803,21 @@ elif "Abrir Reclamação" in modulo_selecionado:
         } for s in selecionados]
         st.dataframe(pd.DataFrame(tabela), use_container_width=True, hide_index=True)
 
-        grupos = {}
+        # Dois níveis de agrupamento: LOGIN por cliente/CNPJ (cada CNPJ só é
+        # acessível com o login daquele cliente) e CHAMADO por usina dentro de
+        # cada CNPJ (mesmo logado, a Coelba exige um chamado por usina).
+        clientes_distintos = {s["cliente"] for s in selecionados}
+        grupos_chamado = {}
         for s in selecionados:
-            grupos.setdefault(s["usina"] or s["uc_codigo"], []).append(s)
-        if len(grupos) == 1 and len(selecionados) > 1:
-            st.success(f"Todas as UCs selecionadas são da mesma usina — isso vai virar **1 chamado** cobrindo as {len(selecionados)} UCs.")
-        elif len(grupos) > 1:
-            st.warning(f"As UCs selecionadas cobrem **{len(grupos)} usinas diferentes** — isso vai virar **{len(grupos)} chamados**, um por usina (a Coelba exige abrir separado nesse caso).")
+            grupos_chamado.setdefault((s["cliente"], s["usina"] or s["uc_codigo"]), []).append(s)
+
+        if len(grupos_chamado) == 1 and len(selecionados) > 1:
+            st.success(f"Todas as UCs selecionadas são do mesmo cliente/CNPJ e da mesma usina — isso vai virar **1 chamado** cobrindo as {len(selecionados)} UCs.")
+        else:
+            st.warning(
+                f"Isso vai virar **{len(grupos_chamado)} chamado(s)**, usando **{len(clientes_distintos)} login(s)** "
+                f"na Coelba (um por cliente/CNPJ — dentro do mesmo CNPJ ainda abre um chamado por usina)."
+            )
 
         c1, c2 = st.columns(2)
         with c1:
@@ -827,9 +835,12 @@ elif "Abrir Reclamação" in modulo_selecionado:
         tipo = st.session_state.get("rec_tipo", TIPOS_SOLICITACAO_RECLAMACAO[0])
         papel = st.session_state.get("rec_papel", "Beneficiária")
         selecionados = list(st.session_state.rec_selecionados.values())
+        # Dois níveis: LOGIN por cliente/CNPJ, CHAMADO por usina dentro de
+        # cada CNPJ (mesmo logado, a Coelba exige um chamado por usina).
+        clientes_distintos = {s["cliente"] for s in selecionados}
         grupos = {}
         for s in selecionados:
-            grupos.setdefault(s["usina"] or s["uc_codigo"], []).append(s)
+            grupos.setdefault((s["cliente"], s["usina"] or s["uc_codigo"]), []).append(s)
 
         motivo_principal = st.selectbox("Motivo Principal:", MOTIVOS_PRINCIPAIS_RECLAMACAO, key="rec5_motivo")
         opcoes_detalhe = DETALHES_MOTIVO_RECLAMACAO.get(motivo_principal, [])
@@ -862,7 +873,7 @@ elif "Abrir Reclamação" in modulo_selecionado:
         else:
             mes_referencia = data_vencimento = valor_fatura = ""
 
-        st.caption(f"Isso vai gerar **{len(grupos)} chamado(s)** na fila (um por usina/UC agrupado).")
+        st.caption(f"Isso vai gerar **{len(grupos)} chamado(s)** na fila, usando **{len(clientes_distintos)} login(s)** na Coelba.")
 
         c1, c2 = st.columns(2)
         with c1:
@@ -877,7 +888,7 @@ elif "Abrir Reclamação" in modulo_selecionado:
                     erros = []
                     for grupo in grupos.values():
                         observacao = (
-                            f"Chamado aberto em conjunto para {len(grupo)} UCs da mesma usina: "
+                            f"Chamado aberto em conjunto para {len(grupo)} UCs da mesma usina/CNPJ: "
                             + ", ".join(g["uc_codigo"] for g in grupo)
                         ) if len(grupo) > 1 else ""
                         try:
@@ -905,7 +916,10 @@ elif "Abrir Reclamação" in modulo_selecionado:
                     if erros:
                         st.error("❌ Erro ao registrar: " + "; ".join(erros))
                     else:
-                        st.success(f"✅ {len(grupos)} chamado(s) registrado(s) na fila! Status: Pendente de envio.")
+                        st.success(
+                            f"✅ {len(grupos)} chamado(s) registrado(s) na fila (usando {len(clientes_distintos)} "
+                            f"login(s) na Coelba)! Status: Pendente de envio."
+                        )
                         _reiniciar_fluxo_reclamacao()
                         st.rerun()
 
