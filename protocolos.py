@@ -38,11 +38,22 @@ ABA_UCS_DEPARA = "UCs (de-para)"
 CABECALHO_UCS_DEPARA = ["Cliente", "Codigo Cliente", "NUC", "Razao Social", "Endereco", "Bairro", "Municipio"]
 
 # --- Abertura de reclamação (Fale Conosco > Ouvidoria > Reclamação na Agência
-# Virtual) — mapeada manualmente em 2026-11-09. Ainda não existe automação que
-# submeta isso pra Coelba de verdade (o fluxo completo — E-mail, Dados
-# Adicionais, Envio — ainda está sendo mapeado); por enquanto o formulário do
-# Hub só grava aqui, numa fila, pra alguém enviar manualmente até a automação
-# de envio ficar pronta.
+# Virtual) — fluxo completo mapeado ao vivo em 13/11 (logado como BLUE, até a
+# tela de confirmação final). Passos reais da Coelba, nessa ordem: Protocolo
+# (opcional) -> Manifestação (Motivo/Detalhe/Relato/Telefone) -> [só se Motivo
+# = Faturas: Faturas (mês/vencimento/valor, VALIDADO contra fatura real via
+# "Localizar fatura") -> Solicitar Leitura] -> E-mail (pra onde a resposta
+# vai: e-mail de contato, e-mail da área logada, ou outro) -> Dados Adicionais
+# (anexo opcional) -> Envio.
+# ATENÇÃO — descoberta importante do teste ao vivo: clicar "Continuar" em
+# "Dados Adicionais" (mesmo sem anexar nada) É O ENVIO FINAL, sem nenhuma
+# tela de confirmação depois. Não existe um passo de revisar-antes-de-enviar;
+# a Coelba trata esse clique como a manifestação enviada e já devolve o
+# protocolo. Qualquer automação futura (ou teste manual) precisa tratar esse
+# clique como irreversível.
+# Ainda não existe automação que submeta isso pra Coelba de verdade — por
+# enquanto o formulário do Hub só grava aqui, numa fila, pra alguém abrir
+# manualmente até a automação de envio ficar pronta.
 ABA_FILA_RECLAMACOES = "Fila de Reclamações"
 # Estrutura revisada em 2026-11-13 com a equipe (reunião "Automatização de
 # Abertura de Chamados"): o fluxo de seleção agora é Tipo de solicitação ->
@@ -50,22 +61,24 @@ ABA_FILA_RECLAMACOES = "Fila de Reclamações"
 # cobrir mais de uma UC por chamado quando elas são da mesma usina/CNPJ
 # (a Coelba exige agrupar nesse caso). Uma linha nessa fila == um chamado
 # real a abrir (já agrupado); "UCs Incluidas" guarda todas as UCs cobertas.
+# "E-mail para Resposta" foi adicionado depois de confirmar ao vivo que a
+# Coelba exige esse campo (passo "E-mail", antes de Dados Adicionais).
 CABECALHO_FILA_RECLAMACOES = [
     "Status", "Data de Criação", "Criado por", "Tipo de Solicitação",
     "Beneficiária ou Geradora", "Cliente", "UCs Incluidas", "Usina Atrelada",
     "Motivo Principal", "Detalhes do Motivo", "Relato da Manifestação",
-    "Telefone para Contato", "Ponto de Referencia", "Protocolo Anterior",
-    "Responsável por Abrir", "Observação", "Mes de Referencia",
-    "Data de Vencimento", "Valor da Fatura", "Protocolo Coelba",
+    "Telefone para Contato", "E-mail para Resposta", "Ponto de Referencia",
+    "Protocolo Anterior", "Responsável por Abrir", "Observação",
+    "Mes de Referencia", "Data de Vencimento", "Valor da Fatura", "Protocolo Coelba",
 ]
 STATUS_FILA_PENDENTE = "Pendente de envio"
 
 TIPOS_SOLICITACAO_RECLAMACAO = ["Ouvidoria (Reclamação)", "Falta de Energia"]
 
 # Motivo Principal: as 18 opções exatas do dropdown da Ouvidoria. Detalhes do
-# Motivo depende do Motivo Principal escolhido — só "Faturas" foi mapeado até
-# agora (as outras categorias ainda não foram abertas pra listar as opções
-# delas); pra qualquer outro motivo o campo vira texto livre no formulário.
+# Motivo depende do Motivo Principal escolhido — mapeado em 13/11 via Claude
+# in Chrome, logado como BLUE (ver sessão de mapeamento), lendo as opções
+# reais do dropdown pra cada um dos 18 motivos.
 MOTIVOS_PRINCIPAIS_RECLAMACAO = [
     "Alteração Cadastral", "Apresentação/ Entrega de Contas", "Atendimento",
     "Cobrança Indevida de Atividade Acessória", "Cobrança por Irregularidade",
@@ -75,6 +88,47 @@ MOTIVOS_PRINCIPAIS_RECLAMACAO = [
     "Tarifas", "Tensão de Fornecimento", "Valores Mínimos Faturáveis", "Variação de Consumo",
 ]
 DETALHES_MOTIVO_RECLAMACAO = {
+    "Alteração Cadastral": [
+        "Alt. Cad. incorretas ou não solicitadas", "Alteração contratual",
+        "Alteração da Data de Vencimento", "Alterações cadastrais não efetivadas",
+        "Dificuldades para Alterar Cadastro", "Erro cadastro inicial para ligação UC",
+        "Troca de Titularidade",
+    ],
+    "Apresentação/ Entrega de Contas": [
+        "2ª via não entregue/Decl. de Quit. Anual", "Contas entregues fora do prazo previsto",
+        "Entrega aviso/reaviso na fatura", "Entrega fatura Molhada/rasgada/aberta",
+        "Fatura não recebida", "Fatura não recebida no endereço postal",
+        "Problema recorrente entrega da fatura",
+    ],
+    "Atendimento": [
+        "Atend. canais digitais da Concessionária", "Conduta inadeq. Empregado/prestador serv",
+        "Espera acima de 1 minuto no teleatend.", "Espera atend. presencial superior 45mim",
+        "Estrutura inadequada no atend presencial", "Falta de acesso a canais de atendimento",
+        "Falta de atendimento prioritário", "Falta material obrigatório no atend.Pres",
+        "Informação Incorreta da concessionária", "NENHUMA DAS ANTERIORES",
+        "Serviço mal executado",
+    ],
+    "Cobrança Indevida de Atividade Acessória": [
+        "Aferição em medidor laboratório próprio", "Alug./cessão onerosa imóv/espaço físico",
+        "Arrecad. convênios fatura de energia", "Compartilhamento de infraestrutura",
+        "Consultoria de ativ. acessória Regulada", "Elab. Projeto, Constr., Manut. Rede, SE",
+        "Inst. cogeração ( P&D/Eficiência Energ.)", "NENHUMA DAS ANTERIORES",
+        "Operacion. serviço de crédito tributário", "Propaganda na fat. energia/pg eletronica",
+        "Receb. Fatura terceiros estrutura próp.", "Serviços de comunicação dados",
+    ],
+    "Cobrança por Irregularidade": [
+        "Cobrança a não titular em período irreg.", "Deficiência na caracterização da irreg.",
+        "Erro na aplicação do inciso da cobrança", "Fat. da recup. de consumo sem comunicado",
+        "Fat. da recup. de consumo sem TOI", "Inconsistência de valores cobrados",
+        "Inconsistência período da irregularidade",
+    ],
+    "Danos Elétricos": [
+        "Concessionária se exime ressarcir Art210", "Deficiência na caract. nexo causalidade",
+        "Exigência para apresentar laudo", "Não aceitação de Laudo apresentado",
+        "Recusa no cadastro de Ressarcimento Dano", "Ressarcimento não realizado no prazo",
+        "Substituição Equip. de qualidade inferio", "Valor ressarcimento inferior ao devido",
+    ],
+    "Erro de Leitura": ["Erro Leitura do medidor", "Leitura GD"],
     "Faturas": [
         "Ausência de faturamento", "BANDEIRAS TARIFÁRIAS",
         "Bônus de redução voluntária no consumo", "Classificação tarifária incorreta",
@@ -89,9 +143,59 @@ DETALHES_MOTIVO_RECLAMACAO = {
         "Relatórios GD", "Remanejamento de Leitura", "Tarifa Branca",
         "Tarifa errada qdo. Da Reclassificação UC",
     ],
+    "Indisp. de Agência/Posto de Atendimento": [
+        "Agência / Posto de atendimento fechado", "Falta de agência / posto de atendimento",
+        "Inexistência Pto Arrecada no Município",
+    ],
+    "Interrupção do Fornecimento de Energia": [
+        "FALTA DE ENERGIA PONTUAL", "Interrupção Frequente do Fornecimento",
+        "Interrupção programada",
+    ],
+    "Outros": [
+        "Canais de atendimento não regulados", "Compensação descumprimento prazo ñ real",
+        "CONEXÃO DE MICROGERAÇÃO", "Danos não elétricos", "Débito automático",
+        "DEVOLUÇÃO DE VAL. ANTECIP. FINANCEIRA", "Fatura paga e não baixada",
+        "Iluminação Pública", "Limpeza de Terreno", "Medição Eletrônica", "Negativação",
+        "NENHUMA DAS ANTERIORES", "Outros não enquadrados demais tipologias",
+        "Participação Financeira", "Poda de Árvore", "Poste em mau Estado",
+        "Relocação de Poste", "Serviço não solicitado pelo titular",
+        "Serviços Massificados", "Substituição de equipamento de rede",
+    ],
+    "Prazos": [
+        "Aferição de Medidor", "Atraso da reclamação de 1ª instância", "Aumento de Carga",
+        "Conexão GD", "Extensão de rede não atendida", "Ligação Nova não atendida no prazo",
+        "Ligação provisória não atendida no prazo", "Mudança de Local de Medidor",
+        "Religação não atendida no prazo", "Vistoria GD",
+    ],
+    "Problemas de instalação interna na UC": [
+        "Defeito Instal interna Eficiencia Energ.", "Defeito Instalações internas de LPT",
+        "Fuga de Corrente", "Reprovação do padrão de entrada da UC",
+    ],
+    "Suspensão Indevida": [
+        "Corte UC Bx Renda s/observar o mín 30 d", "Corte UC com conta paga",
+        "Corte UC com Débitos não reconhecidos", "Corte UC conta reclamação pendente",
+        "Corte UC débito vencido após 90 dias", "Corte UC fora horário comercial/úteis",
+        "Corte UC na vigência de aviso regulado", "Corte UC sem aviso regulado",
+    ],
+    "Tarifas": [
+        "Preço unid. de energia elétrica/demanda", "Tarifas Homologadas pela Aneel",
+    ],
+    "Tensão de Fornecimento": [
+        "Flutuação/Variação/Oscilação de Tensão", "Prazo para obras de adequação de tensão",
+        "Qualidade do Fornecimento de Energia",
+    ],
+    "Valores Mínimos Faturáveis": [
+        "Cobrança de disponibilidade durante susp", "Faturamento com base custo disponib.",
+    ],
+    "Variação de Consumo": [
+        "Aferição do Medidor", "Consumo elevado", "Variação brusca de consumo",
+    ],
 }
-# Motivos que, no site da Coelba, abrem um passo extra pedindo dados da
-# fatura (mês de referência, vencimento, valor) antes de seguir.
+# Motivos que, no site da Coelba, abrem um passo extra ("Faturas", antes de
+# E-mail) pedindo mês de referência/vencimento/valor — e esse passo VALIDA
+# os 3 campos contra uma fatura real (botão "Localizar fatura"; dado
+# inventado trava com "Fatura não localizada"). O robô de envio real vai
+# precisar do dado real da fatura, não dá pra inventar.
 MOTIVOS_COM_PASSO_FATURA = {"Faturas"}
 
 # Abas da planilha de controle (mesma usada pelo módulo de Faturas) com o
@@ -813,8 +917,8 @@ def atualizar_aba_ucs_depara(planilha, cliente, ucs):
 
 def registrar_reclamacao_na_fila(tipo_solicitacao, beneficiaria_ou_geradora, cliente, ucs_incluidas,
                                    usina, motivo_principal, detalhes_motivo, relato, telefone,
-                                   ponto_referencia="", protocolo_anterior="", responsavel="",
-                                   observacao="", mes_referencia="", data_vencimento="",
+                                   email_resposta="", ponto_referencia="", protocolo_anterior="",
+                                   responsavel="", observacao="", mes_referencia="", data_vencimento="",
                                    valor_fatura="", criado_por=""):
     """Grava um chamado rascunhado pelo formulário do Hub na aba 'Fila de
     Reclamações', com status 'Pendente de envio'. Uma chamada == um chamado
@@ -842,11 +946,14 @@ def registrar_reclamacao_na_fila(tipo_solicitacao, beneficiaria_ou_geradora, cli
     linha = [
         STATUS_FILA_PENDENTE, datetime.now().strftime("%d/%m/%Y %H:%M"), criado_por,
         tipo_solicitacao, beneficiaria_ou_geradora, cliente.upper(), ucs_incluidas, usina,
-        motivo_principal, detalhes_motivo, relato, telefone, ponto_referencia,
+        motivo_principal, detalhes_motivo, relato, telefone, email_resposta, ponto_referencia,
         protocolo_anterior, responsavel, observacao, mes_referencia, data_vencimento,
         valor_fatura, "",
     ]
-    aba.append_rows([linha], value_input_option="USER_ENTERED", table_range="A1")
+    # RAW (não USER_ENTERED): essa aba não tem fórmula nenhuma, e USER_ENTERED
+    # deixa o Sheets "ajudar" convertendo campos tipo UCs Incluidas em número e
+    # comendo o zero à esquerda (007099424626 virava 7099424626).
+    aba.append_rows([linha], value_input_option="RAW", table_range="A1")
 
     total_linhas = len(aba.get_all_values())
     _estilizar_aba_simples(planilha, aba, len(CABECALHO_FILA_RECLAMACOES), total_linhas, largura_colunas=160)

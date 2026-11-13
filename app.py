@@ -853,6 +853,10 @@ elif "Abrir Reclamação" in modulo_selecionado:
             )
         relato = st.text_area("Relato da Manifestação:", height=120, key="rec5_relato")
         telefone = st.text_input("Telefone para Contato:", value=os.getenv("TELEFONE_PADRAO_SOL", ""), key="rec5_telefone")
+        email_resposta = st.text_input(
+            "E-mail para Resposta:", value=os.getenv("EMAIL_PADRAO_SOL", ""), key="rec5_email",
+            help="A Coelba pede um e-mail pra onde mandar a resposta da manifestação (confirmado no fluxo real em 13/11).",
+        )
 
         ponto_referencia = ""
         if tipo == "Falta de Energia":
@@ -882,8 +886,8 @@ elif "Abrir Reclamação" in modulo_selecionado:
                 st.rerun()
         with c2:
             if st.button("📝 Registrar na fila", type="primary"):
-                if not relato or not telefone:
-                    st.warning("⚠️ Preencha ao menos Relato e Telefone.")
+                if not relato or not telefone or not email_resposta:
+                    st.warning("⚠️ Preencha ao menos Relato, Telefone e E-mail para Resposta.")
                 else:
                     erros = []
                     for grupo in grupos.values():
@@ -902,6 +906,7 @@ elif "Abrir Reclamação" in modulo_selecionado:
                                 detalhes_motivo=detalhes_motivo,
                                 relato=relato,
                                 telefone=telefone,
+                                email_resposta=email_resposta,
                                 ponto_referencia=ponto_referencia,
                                 protocolo_anterior=protocolo_anterior,
                                 responsavel=responsavel,
