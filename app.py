@@ -756,16 +756,17 @@ elif "Abrir Reclamação" in modulo_selecionado:
             termo_norm = _sem_acento(termo.strip())
             candidatos = [
                 u for u in candidatos
-                if termo_norm in _sem_acento(u["cliente"]) or termo_norm in _sem_acento(u["razao_social"])
-                or termo_norm in _sem_acento(u["uc_codigo"]) or termo_norm in _sem_acento(u["nuc"])
-                or termo_norm in _sem_acento(u["usina"])
+                if termo_norm in _sem_acento(u["cliente"]) or termo_norm in _sem_acento(u["nome_cliente"])
+                or termo_norm in _sem_acento(u["razao_social"]) or termo_norm in _sem_acento(u["uc_codigo"])
+                or termo_norm in _sem_acento(u["nuc"]) or termo_norm in _sem_acento(u["usina"])
             ]
 
         st.caption(f"{len(candidatos)} resultado(s). Marque um ou mais — dá pra refazer a busca sem perder o que já foi marcado.")
         for item in candidatos[:60]:
             codigo = item["uc_codigo"]
             n_chamados = contagem.get(normalizar_numero(codigo), 0)
-            label = f"{item['cliente']} · {item['razao_social']} · UC {codigo} · NUC {item['nuc']}"
+            nome_exibido = item["nome_cliente"] or item["razao_social"] or "(sem nome cadastrado)"
+            label = f"{item['cliente']} · {nome_exibido} · UC {codigo} · NUC {item['nuc']}"
             if item["usina"]:
                 label += f" · Usina: {item['usina']}"
             label += f" · {n_chamados} chamado(s) já aberto(s)"
@@ -794,7 +795,7 @@ elif "Abrir Reclamação" in modulo_selecionado:
         selecionados = list(st.session_state.rec_selecionados.values())
         contagem = st.session_state.get("rec_contagem", {})
         tabela = [{
-            "Nome Cliente": s["razao_social"] or s["cliente"],
+            "Nome Cliente": s["nome_cliente"] or s["razao_social"] or s["cliente"],
             "UC": s["uc_codigo"],
             "NUC": s["nuc"],
             "Usina Atrelada": s["usina"] or "—",

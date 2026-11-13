@@ -404,6 +404,33 @@ def carregar_mapa_geradoras(client_sheets):
         return {}, {}
 
 
+def carregar_nomes_clientes(client_sheets):
+    """Lê a aba 'clienteContato' e monta o mapa código do cliente (normalizado)
+    -> nome_cliente (o nome da pessoa/empresa dona daquela UC específica, ex:
+    'Udilã Cortes' — diferente da Razão Social da conta Sol, que é a mesma pra
+    todas as UCs e não ajuda a distinguir uma da outra na busca do módulo de
+    Abrir Reclamação). Mesma tolerância a erro de carregar_mapa_geradoras:
+    aba fora do ar vira dict vazio, não trava o resto."""
+    try:
+        planilha_controle = client_sheets.open_by_key(CONTROLE_SPREADSHEET_ID)
+        valores_contato = planilha_controle.worksheet(ABA_CLIENTE_CONTATO).get_all_values()
+        cab_contato = valores_contato[0]
+        idx_codigo = cab_contato.index("contato do cliente")
+        idx_nome = cab_contato.index("nome_cliente")
+        nomes = {}
+        for linha in valores_contato[1:]:
+            if len(linha) <= max(idx_codigo, idx_nome):
+                continue
+            codigo = normalizar_numero(linha[idx_codigo])
+            nome = linha[idx_nome].strip()
+            if codigo and nome:
+                nomes[codigo] = nome
+        return nomes
+    except Exception as e:
+        print(f"  ⚠️ Não consegui carregar os nomes de clientes: {e}")
+        return {}
+
+
 def identificar_geradora(codigo_beneficiaria, ucs_cliente, beneficiaria_para_usina, usina_para_geradora):
     """A partir do código do cliente da UC beneficiária (a UC real da
     solicitação), acha a UC geradora vinculada, cruzando clienteContato +
@@ -830,11 +857,16 @@ def construir_catalogo_ucs(client_sheets=None):
     """Monta o catálogo de UCs pra alimentar a busca do módulo 'Abrir
     Reclamação' (Nome Cliente / NUC / Usina Atrelada), a partir da aba
     'UCs (de-para)' (já preenchida pelos módulos de Faturas/Protocolos, sem
-    precisar logar de novo na Coelba) cruzada com o mapa de geradoras. Cada
-    item: cliente, uc_codigo, nuc, razao_social, endereco, usina (vazio se a
-    UC não for beneficiária de nenhuma usina), eh_geradora (bool)."""
+    precisar logar de novo na Coelba) cruzada com o mapa de geradoras e com
+    os nomes reais de cliente (clienteContato!nome_cliente — a pessoa/empresa
+    dona daquela UC específica, não a Razão Social da conta Sol, que é igual
+    pra todas as UCs e não ajuda a achar uma UC na busca). Cada item: cliente,
+    uc_codigo, nuc, razao_social, nome_cliente (nome real, pode vir vazio se
+    a UC não estiver em clienteContato), endereco, usina (vazio se a UC não
+    for beneficiária de nenhuma usina), eh_geradora (bool)."""
     client_sheets = client_sheets or autenticar_google_sheets()
     beneficiaria_para_usina, usina_para_geradora = carregar_mapa_geradoras(client_sheets)
+    nomes_clientes = carregar_nomes_clientes(client_sheets)
     codigos_geradoras = set(usina_para_geradora.values())
 
     planilha = client_sheets.open_by_key(PROTOCOLOS_SPREADSHEET_ID)
@@ -854,6 +886,7 @@ def construir_catalogo_ucs(client_sheets=None):
             "uc_codigo": uc_codigo,
             "nuc": nuc,
             "razao_social": razao_social,
+            "nome_cliente": nomes_clientes.get(codigo_norm, ""),
             "endereco": ", ".join(p for p in [endereco, bairro, municipio] if p),
             "usina": beneficiaria_para_usina.get(codigo_norm, ""),
             "eh_geradora": codigo_norm in codigos_geradoras,
