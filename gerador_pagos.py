@@ -23,6 +23,8 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaInMemoryUpload
 import requests
 
+from layout_planilha import obter_layout
+
 # --- CONFIGURAÇÕES INICIAIS ---
 if getattr(sys, 'frozen', False):
     base_path = sys._MEIPASS
@@ -231,7 +233,8 @@ def processar_aba_otimizada(nome_aba, cache_drive):
         safe_print(f"❌ Aba {nome_aba} não encontrada.")
         return 0, 0
 
-    coluna_j = aba.col_values(10)
+    layout = obter_layout(aba)
+    coluna_j = aba.col_values(layout['idx_link'])
     tarefas = []
     
     for i, link in enumerate(coluna_j):
@@ -265,7 +268,7 @@ def processar_aba_otimizada(nome_aba, cache_drive):
         updates = []
         for l_num, link in resultados.items():
             updates.append({
-                'range': f'K{l_num}',
+                'range': f"{layout['col_link_pago']}{l_num}",
                 'values': [[link]]
             })
         

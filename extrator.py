@@ -24,6 +24,8 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaInMemoryUpload
 from oauth2client.service_account import ServiceAccountCredentials
 
+from layout_planilha import COL_SOL, obter_layout, dia_util_anterior
+
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -242,19 +244,17 @@ def extrair_faturas_e_flags(planilha_id, nome_aba):
     try:
         client = autenticar_google_sheets()
         aba = client.open_by_key(planilha_id).worksheet(nome_aba)
-        dados = aba.get_values("C2:R")
+        layout = obter_layout(aba)
+        dados = aba.get_values(f"C2:{layout['fim_flags']}")
         resultado = {}
-        colunas = ['M', 'N', 'O', 'P', 'Q', 'R']
-        indices = [10, 11, 12, 13, 14, 15]
+        base = layout["deslocamento_flags"]
         for linha in dados:
             if len(linha) >= 1:
                 fatura = linha[0]
                 flags = {}
-                for coluna, indice in zip(colunas, indices):
-                    if indice < len(linha):
-                        flags[coluna] = (str(linha[indice]).upper() == 'TRUE')
-                    else:
-                        flags[coluna] = False
+                for i in range(6):
+                    indice = base + i
+                    flags[i] = (indice < len(linha) and str(linha[indice]).upper() == 'TRUE')
                 resultado[fatura] = flags
         return resultado
     except Exception:
@@ -264,15 +264,13 @@ def restaurar_flags(planilha_id, nome_aba, flags_salvas):
     try:
         client = autenticar_google_sheets()
         aba = client.open_by_key(planilha_id).worksheet(nome_aba)
+        layout = obter_layout(aba)
         faturas_atuais = aba.get_values("C2:C")
-        colunas = ['M', 'N', 'O', 'P', 'Q', 'R']
-        for coluna in colunas:
+        for i, coluna in enumerate(layout["flags"]):
             valores = []
             for linha in faturas_atuais:
                 if linha and linha[0]:
-                    fatura = linha[0]
-                    val = flags_salvas.get(fatura, {}).get(coluna, False)
-                    valores.append([val])
+                    valores.append([flags_salvas.get(linha[0], {}).get(i, False)])
                 else:
                     valores.append([False])
             if valores:
@@ -288,31 +286,41 @@ def normalizar_valor_emissao(valor):
         return "N/A"
     return valor_str.replace(".", ",")
 
-def escrever_no_google_sheets(df, planilha_id, nome_aba, intervalo="A2:G"):
+def escrever_no_google_sheets(df, planilha_id, nome_aba):
     client_sheets = autenticar_google_sheets()
     planilha = client_sheets.open_by_key(planilha_id)
     aba = planilha.worksheet(nome_aba)
-    aba.batch_clear([intervalo, "K2:K"])
+    layout = obter_layout(aba)
+    colunas = list(EXPORT_COLUMNS)
     df_export = df.copy()
-    for coluna in EXPORT_COLUMNS:
+    if layout["tem_sol"]:
+        colunas.insert(colunas.index("vencimento") + 1, COL_SOL)
+        sol = pd.to_datetime(df_export["vencimento"], errors="coerce").apply(dia_util_anterior)
+        df_export[COL_SOL] = pd.to_datetime(sol).dt.strftime("%Y-%m-%d").fillna("N/A")
+    for coluna in colunas:
         if coluna not in df_export.columns:
             df_export[coluna] = "N/A"
-    df_export = df_export[EXPORT_COLUMNS]
+    df_export = df_export[colunas]
+    intervalo = f"A2:{layout['ultima_exportada']}"
+    aba.batch_clear([intervalo, f"{layout['col_link_pago']}2:{layout['col_link_pago']}"])
     dados = df_export.fillna("N/A").astype(str).values.tolist()
     if dados:
         aba.update(intervalo, dados, value_input_option="USER_ENTERED")
+    print(f"  Planilha {'COM' if layout['tem_sol'] else 'sem'} a coluna {COL_SOL}.")
 
 def atualizar_links_sheets(planilha_id, nome_aba, df_filtrado):
     try:
         client_sheets = autenticar_google_sheets()
         planilha = client_sheets.open_by_key(planilha_id)
         aba = planilha.worksheet(nome_aba)
+        layout = obter_layout(aba)
         col_numero_fatura = aba.col_values(3)[1:]
         df_filtrado["numeroFatura"] = df_filtrado["numeroFatura"].astype(str).str.strip()
         dict_links = dict(zip(df_filtrado["numeroFatura"], df_filtrado["link_drive"]))
         col_j = [str(dict_links.get(f.strip(), "")) for f in col_numero_fatura]
         if col_j:
-            aba.update(f"J2:J{len(col_j)+1}", [[l] for l in col_j], value_input_option='USER_ENTERED')
+            col = layout["col_link"]
+            aba.update(f"{col}2:{col}{len(col_j)+1}", [[l] for l in col_j], value_input_option='USER_ENTERED')
     except Exception as e:
         print(f"Erro ao atualizar links: {e}")
 
