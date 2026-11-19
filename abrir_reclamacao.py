@@ -171,11 +171,18 @@ def clicar_texto_exato(driver, texto, timeout=15):
     time.sleep(0.2)
 
 
+def _xp_botao(texto):
+    """XPath de <button> pelo texto, sem diferenciar maiúsculas (o site pode
+    ter 'CONTINUAR' no HTML e 'Continuar' só por CSS)."""
+    baixo = "translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz')"
+    return f"//button[contains({baixo},'{texto.lower()}') or contains(normalize-space(.),'{texto}')]"
+
+
 def _continuar_habilitado(driver, espera=3):
     fim = time.time() + espera
     while time.time() < fim:
         try:
-            for b in driver.find_elements(By.XPATH, "//button[contains(normalize-space(.),'Continuar')]"):
+            for b in driver.find_elements(By.XPATH, _xp_botao("Continuar")):
                 if b.is_displayed() and b.is_enabled() and b.get_attribute("disabled") is None                         and "disabled" not in (b.get_attribute("class") or ""):
                     return True
         except Exception:
@@ -206,7 +213,9 @@ def selecionar_opcao_simples(driver, texto, timeout=15):
             estrategia()
         except Exception:
             continue
-        if _continuar_habilitado(driver):
+        marcado = driver.execute_script(
+            "let r=arguments[0].closest('mat-radio-button'); return !!(r && r.classList.contains('mat-radio-checked'));", el)
+        if marcado or _continuar_habilitado(driver):
             return
     html = driver.execute_script(
         "let n=arguments[0]; for(let i=0;i<3&&n.parentElement;i++) n=n.parentElement; return n.outerHTML;", el
@@ -219,7 +228,7 @@ def selecionar_opcao_simples(driver, texto, timeout=15):
 
 def clicar_botao(driver, texto_contendo, timeout=15):
     el = WebDriverWait(driver, timeout).until(
-        EC.element_to_be_clickable((By.XPATH, f"//button[contains(normalize-space(.),'{texto_contendo}')]"))
+        EC.element_to_be_clickable((By.XPATH, _xp_botao(texto_contendo)))
     )
     _clicar(driver, el)
     time.sleep(0.3)
@@ -230,7 +239,7 @@ def fechar_modal_se_existir(driver, texto_botao, timeout=5):
     timeout. Não é erro se não aparecer — devolve False nesse caso."""
     try:
         el = WebDriverWait(driver, timeout).until(
-            EC.element_to_be_clickable((By.XPATH, f"//button[contains(normalize-space(.),'{texto_botao}')]"))
+            EC.element_to_be_clickable((By.XPATH, _xp_botao(texto_botao)))
         )
         _clicar(driver, el)
         time.sleep(0.3)
