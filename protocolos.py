@@ -14,7 +14,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-from extrator import configurar_driver, realizar_login_selenium_original, autenticar_google_sheets, SPREADSHEET_ID as CONTROLE_SPREADSHEET_ID
+from extrator import obter_token, autenticar_google_sheets, SPREADSHEET_ID as CONTROLE_SPREADSHEET_ID
 
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -1258,24 +1258,13 @@ def processar_protocolos_cliente(cliente, login_user, login_password):
     novos = 0
     atualizados = 0
     alertas = 0
-    driver = None
 
-    try:
-        driver = configurar_driver()
-        driver.get("https://agenciavirtual.neoenergia.com/#/login")
-        time.sleep(4)
-        WebDriverWait(driver, 30).until(lambda d: d.execute_script("return document.readyState") == "complete")
-
-        bearer_token = realizar_login_selenium_original(driver, login_user, login_password, f"protocolo_{cliente}")
-        if not bearer_token:
-            print(f"  ❌ [{cliente}] Falha no login.")
-            return False, novos, atualizados, alertas
-
-        token_ne_se = bearer_token.split(":")[1].split(",")[0].strip(' "{}')
-        print(f"  ✅ [{cliente}] Login realizado!")
-    finally:
-        if driver:
-            driver.quit()
+    # Login unico compartilhado com o modulo de Faturas (extrator.obter_token):
+    # reaproveita o token se ainda estiver valido, senao loga pelo Selenium.
+    token_ne_se = obter_token(cliente, login_user, login_password, rotulo=f"protocolo_{cliente}")
+    if not token_ne_se:
+        print(f"  ❌ [{cliente}] Falha no login.")
+        return False, novos, atualizados, alertas
 
     try:
         ucs = obter_ucs_cliente(login_user, token_ne_se)

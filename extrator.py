@@ -238,6 +238,123 @@ def realizar_login_selenium_original(driver, login_user, login_password, cliente
         _diagnosticar_pagina(driver)
         return None
 
+# --- TOKEN DA COELBA: LOGIN UNICO + CACHE EM MEMORIA ---
+# O login em si continua sendo o Selenium acima (o portal exige reCAPTCHA v3,
+# que so um navegador gera). Aqui fica o que e comum a Faturas e Protocolos:
+# tentativas, trava do Chrome e reaproveitamento do token enquanto ele vale.
+
+MAX_TENTATIVAS_LOGIN = 3
+MARGEM_EXPIRACAO_S = 600        # nao reaproveita token com menos de 10 min de vida
+VALIDADE_PRESUMIDA_S = 50 * 60  # usada so se nao der pra ler o 'exp' do token
+URL_LOGIN = "https://agenciavirtual.neoenergia.com/#/login"
+
+_token_cache = {}  # documento (CPF/CNPJ) -> (token, expira_em_epoch)
+_token_cache_lock = Lock()
+
+def _extrair_token_ne(bruto):
+    """Tira o token da regiao NE do valor de localStorage.tokenNeSe ({"ne": "...", "se": "..."})."""
+    try:
+        token = json.loads(bruto).get("ne")
+        if token:
+            return str(token).strip()
+    except Exception:
+        pass
+    # Reserva: o recorte por texto usado antes desta mudanca.
+    return bruto.split(":")[1].split(",")[0].strip(' "{}')
+
+def _expiracao_do_token(token):
+    """Le o 'exp' (epoch) de dentro do JWT; se nao der, presume VALIDADE_PRESUMIDA_S a partir de agora."""
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        return float(json.loads(base64.urlsafe_b64decode(payload))["exp"])
+    except Exception:
+        return time.time() + VALIDADE_PRESUMIDA_S
+
+def _token_ainda_aceito(login_user, token):
+    """Uma chamada leve pra saber se a Coelba ainda aceita o token guardado.
+    Cobre o caso de alguem ter feito login no portal com o mesmo CNPJ e isso
+    ter derrubado a sessao anterior. So 401/403 condena o token; erro de rede
+    ou outro status nao (as chamadas seguintes ja tem as proprias retentativas)."""
+    try:
+        r = requests.get(
+            f"https://apineprd.neoenergia.com/imoveis/1.1.0/clientes/{login_user}/ucs",
+            params={"documento": login_user, "canalSolicitante": "AGC", "distribuidora": "COELBA",
+                    "usuario": "WSO2_CONEXAO", "indMaisUcs": "X", "tipoPerfil": "1"},
+            headers={"User-Agent": "Mozilla/5.0", "Authorization": "Bearer " + token}, timeout=30)
+        return r.status_code not in (401, 403)
+    except Exception:
+        return True
+
+def invalidar_token(login_user):
+    """Esquece o token guardado desse documento (o proximo obter_token faz login de novo)."""
+    with _token_cache_lock:
+        _token_cache.pop(str(login_user), None)
+
+def _token_do_cache(login_user):
+    with _token_cache_lock:
+        guardado = _token_cache.get(str(login_user))
+    if not guardado:
+        return None
+    token, expira_em = guardado
+    if expira_em - time.time() < MARGEM_EXPIRACAO_S:
+        invalidar_token(login_user)
+        return None
+    if not _token_ainda_aceito(login_user, token):
+        print("  ℹ️ O token guardado foi recusado pela Coelba (sessão encerrada?); fazendo login de novo.")
+        invalidar_token(login_user)
+        return None
+    return token
+
+def obter_token(cliente, login_user, login_password, rotulo=None):
+    """Devolve o token Bearer (regiao NE) do cliente, ou None se o login falhar.
+
+    Reaproveita o token do ultimo login desse documento enquanto ele tiver mais
+    de MARGEM_EXPIRACAO_S de vida e a Coelba ainda o aceitar; senao faz login
+    pelo Selenium, com ate MAX_TENTATIVAS_LOGIN tentativas e um Chrome por vez.
+    'rotulo' e o sufixo dos prints de erro (padrao: o nome do cliente)."""
+    rotulo = rotulo or cliente
+    token = _token_do_cache(login_user)
+    if token:
+        print(f"  ✅ [{cliente.upper()}] Reaproveitando o login anterior (token ainda válido).")
+        return token
+
+    with chrome_lock:
+        # Outra thread pode ter feito o login enquanto esta esperava a trava.
+        token = _token_do_cache(login_user)
+        if token:
+            print(f"  ✅ [{cliente.upper()}] Reaproveitando o login anterior (token ainda válido).")
+            return token
+
+        for tentativa in range(1, MAX_TENTATIVAS_LOGIN + 1):
+            print(f"  [{cliente.upper()}] Tentativa {tentativa}/{MAX_TENTATIVAS_LOGIN}...")
+            driver = None
+            try:
+                driver = configurar_driver()
+                driver.get(URL_LOGIN)
+                time.sleep(4)
+                WebDriverWait(driver, 30).until(lambda d: d.execute_script("return document.readyState") == "complete")
+
+                bruto = realizar_login_selenium_original(driver, login_user, login_password, rotulo)
+                if bruto:
+                    token = _extrair_token_ne(bruto)
+                    with _token_cache_lock:
+                        _token_cache[str(login_user)] = (token, _expiracao_do_token(token))
+                    print("  ✅ Login realizado!")
+                    return token
+                print("  ⚠️ Token não obtido.")
+            except Exception as e:
+                print(f"  ⚠️ Erro na tentativa: {e}")
+            finally:
+                if driver:
+                    try:
+                        driver.quit()
+                    except Exception:
+                        pass
+            if tentativa < MAX_TENTATIVAS_LOGIN:
+                time.sleep(5)
+    return None
+
 # --- RESTANTE DO CÓDIGO (Igual ao seu) ---
 
 def extrair_faturas_e_flags(planilha_id, nome_aba):
@@ -433,39 +550,11 @@ def get_com_retentativa(url, rotulo, tentativas=4, espera=5, **kwargs):
     return None
 
 def processar_cliente(cliente, login_user, login_password, worksheet):
-    MAX_TENTATIVAS_LOGIN = 3
-    tentativa_atual = 1
-    tokenNeSe = None
-
     # Deleta imagens de erro antigas para não confundir
     for img in [f"erro_sem_token_{cliente}.png", f"erro_botao_{cliente}.png", f"erro_fatal_{cliente}.png"]:
         if os.path.exists(img): os.remove(img)
 
-    with chrome_lock:
-        while tentativa_atual <= MAX_TENTATIVAS_LOGIN:
-            print(f"  [{cliente.upper()}] Tentativa {tentativa_atual}/{MAX_TENTATIVAS_LOGIN}...")
-            driver = configurar_driver()
-            try:
-                driver.get("https://agenciavirtual.neoenergia.com/#/login")
-                time.sleep(4) 
-                WebDriverWait(driver, 30).until(lambda d: d.execute_script("return document.readyState") == "complete")
-            
-                bearer_token = realizar_login_selenium_original(driver, login_user, login_password, cliente)
-            
-                if bearer_token:
-                    tokenNeSe = bearer_token.split(":")[1].split(",")[0].strip(' "{}')
-                    print("  ✅ Login realizado!")
-                    driver.quit()
-                    break
-                else:
-                    print("  ⚠️ Token não obtido.")
-            except Exception as e:
-                 print(f"  ⚠️ Erro na tentativa: {e}")
-             
-            driver.quit()
-            tentativa_atual += 1
-            if tentativa_atual <= MAX_TENTATIVAS_LOGIN:
-                 time.sleep(5)
+    tokenNeSe = obter_token(cliente, login_user, login_password)
 
     if not tokenNeSe:
         print(f"❌ Falha no login de {cliente}.")
