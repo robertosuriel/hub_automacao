@@ -844,16 +844,22 @@ elif "Abrir Reclamação" in modulo_selecionado:
         for s in selecionados:
             grupos.setdefault((s["cliente"], s["usina"] or s["uc_codigo"]), []).append(s)
 
-        motivo_principal = st.selectbox("Motivo Principal:", MOTIVOS_PRINCIPAIS_RECLAMACAO, key="rec5_motivo")
-        opcoes_detalhe = DETALHES_MOTIVO_RECLAMACAO.get(motivo_principal, [])
-        if opcoes_detalhe:
-            detalhes_motivo = st.selectbox("Detalhes do Motivo:", opcoes_detalhe, key="rec5_detalhe_sel")
+        eh_falta_energia = tipo == "Falta de Energia"
+        if eh_falta_energia:
+            # Fluxo real da Coelba (Onde → Problema → Contato → Confirme) só pede
+            # telefone e ponto de referência; o resto é resposta padrão fixa.
+            motivo_principal = detalhes_motivo = relato = email_resposta = protocolo_anterior = ""
         else:
-            detalhes_motivo = st.text_input(
-                "Detalhes do Motivo:", key="rec5_detalhe_txt",
-                help="Esse motivo ainda não tem as opções da Coelba mapeadas — descreva em texto livre.",
-            )
-        relato = st.text_area("Relato da Manifestação:", height=120, key="rec5_relato")
+            motivo_principal = st.selectbox("Motivo Principal:", MOTIVOS_PRINCIPAIS_RECLAMACAO, key="rec5_motivo")
+            opcoes_detalhe = DETALHES_MOTIVO_RECLAMACAO.get(motivo_principal, [])
+            if opcoes_detalhe:
+                detalhes_motivo = st.selectbox("Detalhes do Motivo:", opcoes_detalhe, key="rec5_detalhe_sel")
+            else:
+                detalhes_motivo = st.text_input(
+                    "Detalhes do Motivo:", key="rec5_detalhe_txt",
+                    help="Esse motivo ainda não tem as opções da Coelba mapeadas — descreva em texto livre.",
+                )
+            relato = st.text_area("Relato da Manifestação:", height=120, key="rec5_relato")
 
         opcao_telefone = st.selectbox(
             "Telefone para Contato:", TELEFONES_RECLAMACAO + ["Outro"], key="rec5_telefone_opcao",
@@ -863,14 +869,15 @@ elif "Abrir Reclamação" in modulo_selecionado:
         else:
             telefone = opcao_telefone
 
-        opcao_email = st.selectbox(
-            "E-mail para Resposta:", EMAILS_RECLAMACAO + ["Outro"], key="rec5_email_opcao",
-            help="A Coelba pede um e-mail pra onde mandar a resposta da manifestação (confirmado no fluxo real em 13/11).",
-        )
-        if opcao_email == "Outro":
-            email_resposta = st.text_input("Digite o e-mail:", key="rec5_email_outro")
-        else:
-            email_resposta = opcao_email
+        if not eh_falta_energia:
+            opcao_email = st.selectbox(
+                "E-mail para Resposta:", EMAILS_RECLAMACAO + ["Outro"], key="rec5_email_opcao",
+                help="A Coelba pede um e-mail pra onde mandar a resposta da manifestação (confirmado no fluxo real em 13/11).",
+            )
+            if opcao_email == "Outro":
+                email_resposta = st.text_input("Digite o e-mail:", key="rec5_email_outro")
+            else:
+                email_resposta = opcao_email
 
         ponto_referencia = ""
         endereco_referencia = ""
@@ -893,7 +900,8 @@ elif "Abrir Reclamação" in modulo_selecionado:
                 "'Protocolo Coelba' e 'Prazo Coelba' na Fila de Reclamações."
             )
 
-        protocolo_anterior = st.text_input("Protocolo anterior (se for o caso):", key="rec5_protocolo_anterior")
+        if not eh_falta_energia:
+            protocolo_anterior = st.text_input("Protocolo anterior (se for o caso):", key="rec5_protocolo_anterior")
         responsavel = st.selectbox("Responsável por abrir o chamado:", RESPONSAVEIS, key="rec5_responsavel")
 
         if motivo_principal in MOTIVOS_COM_PASSO_FATURA:
@@ -917,7 +925,9 @@ elif "Abrir Reclamação" in modulo_selecionado:
                 st.rerun()
         with c2:
             if st.button("📝 Registrar na fila", type="primary"):
-                if not relato or not telefone or not email_resposta:
+                if eh_falta_energia and (not telefone or not ponto_referencia):
+                    st.warning("⚠️ Preencha Telefone e Ponto de Referência.")
+                elif not eh_falta_energia and (not relato or not telefone or not email_resposta):
                     st.warning("⚠️ Preencha ao menos Relato, Telefone e E-mail para Resposta.")
                 else:
                     erros = []
