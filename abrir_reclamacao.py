@@ -27,6 +27,7 @@ import time
 import unicodedata
 
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
@@ -242,11 +243,13 @@ def descrever_falha(driver, e):
 
 # --- Navegação até a UC -----------------------------------------------------
 
-def navegar_ate_uc(driver, uc_codigo, timeout=30):
+def navegar_ate_uc(driver, uc_codigo, timeout=30, exigir_ligada=False):
     """A partir do login feito, entra no contexto de uma UC específica
-    (necessário pra qualquer um dos dois fluxos). ⚠️ Parte menos verificada
-    deste módulo — o clique na linha da UC usa uma heurística (último
-    elemento clicável da linha), não um seletor confirmado ao vivo."""
+    (necessário pra qualquer um dos dois fluxos). Elementos confirmados ao
+    vivo (19/11): cada UC é um <app-uc-list-item> com um badge
+    span.btn-status-imovel (LIGADA/DESLIGADA) e um mat-icon de seta
+    (data-mat-icon-name='arrow_forward') que abre a UC.
+    exigir_ligada=True (Falta de Energia): recusa UC DESLIGADA."""
     driver.get(URL_HOME)
     time.sleep(2)
     WebDriverWait(driver, timeout).until(lambda d: d.execute_script("return document.readyState") == "complete")
@@ -261,38 +264,65 @@ def navegar_ate_uc(driver, uc_codigo, timeout=30):
     except Exception:
         pass
 
-    campo_busca = WebDriverWait(driver, timeout).until(
-        EC.presence_of_element_located(
-            (By.XPATH, "//input[contains(@placeholder,'Código do Cliente') or contains(@placeholder,'Unidade Consumidora')]")
-        )
-    )
     # A planilha perde os zeros à esquerda (Sheets trata como número); a Coelba
     # usa 12 dígitos (ex: 007087003102). Completa antes de buscar.
     uc_codigo = str(uc_codigo).strip()
     if uc_codigo.isdigit() and len(uc_codigo) < 12:
         uc_codigo = uc_codigo.zfill(12)
-    uc_sem_zeros = uc_codigo.lstrip("0") or uc_codigo
 
-    campo_busca.clear()
-    campo_busca.send_keys(uc_codigo)
-    time.sleep(1.5)
+    xpath_campo = "//input[contains(@placeholder,'Código do Cliente') or contains(@placeholder,'Unidade Consumidora')]"
+    xpath_item = f"//app-uc-list-item[contains(normalize-space(.),'{uc_codigo}')]"
 
-    linha = WebDriverWait(driver, timeout).until(
-        EC.presence_of_element_located(
-            (By.XPATH, f"//*[contains(text(),'{uc_codigo}') or contains(text(),'{uc_sem_zeros}')]")
+    item = None
+    for tentativa in (1, 2):
+        # A Coelba às vezes não devolve a lista de UCs (bug de sessão): se a
+        # lista não aparece, recarrega uma vez antes de desistir.
+        try:
+            WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "app-uc-list-item")))
+        except Exception:
+            if tentativa == 1:
+                driver.refresh()
+                time.sleep(4)
+                continue
+            raise ErroAbrirReclamacao(
+                "sessao_sem_ucs",
+                "A Coelba não devolveu a lista de Unidades Consumidoras (bug de sessão). "
+                "Tente de novo em alguns minutos (a sessão nova costuma resolver).",
+            )
+        campo = WebDriverWait(driver, timeout).until(EC.presence_of_element_located((By.XPATH, xpath_campo)))
+        campo.clear()
+        campo.send_keys(uc_codigo)
+        campo.send_keys(Keys.ENTER)
+        try:
+            item = WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.XPATH, xpath_item)))
+            break
+        except Exception:
+            if tentativa == 2:
+                raise ErroAbrirReclamacao(
+                    "uc_nao_encontrada", f"A UC {uc_codigo} não apareceu na busca da Coelba com esse login."
+                )
+            driver.refresh()
+            time.sleep(4)
+
+    try:
+        status = item.find_element(By.CSS_SELECTOR, "span.btn-status-imovel").text.strip().upper()
+    except Exception:
+        status = ""
+    if exigir_ligada and "DESLIGADA" in status:
+        raise ErroAbrirReclamacao(
+            "uc_desligada",
+            f"A UC {uc_codigo} está DESLIGADA na Coelba — não faz sentido abrir Falta de Energia. "
+            "Escolha uma UC ligada.",
         )
-    )
-    # Sobe até o container da linha/card e clica no último elemento clicável
-    # dela (tipicamente a seta ">" que abre a UC).
-    container = driver.execute_script(
-        "let el = arguments[0]; for (let i=0;i<6;i++){ if (el.parentElement) el = el.parentElement; "
-        "if (el.querySelectorAll('button, mat-icon, [role=button]').length) return el; } return el;",
-        linha,
-    )
-    clicaveis = container.find_elements(By.XPATH, ".//button | .//mat-icon | .//*[@role='button']")
-    if not clicaveis:
-        raise ErroAbrirReclamacao("uc_nao_clicavel", f"Não achei um elemento clicável pra abrir a UC {uc_codigo}.")
-    _clicar(driver, clicaveis[-1])
+
+    try:
+        seta = item.find_element(By.CSS_SELECTOR, "mat-icon[data-mat-icon-name='arrow_forward']")
+    except Exception:
+        icones = item.find_elements(By.TAG_NAME, "mat-icon")
+        if not icones:
+            raise ErroAbrirReclamacao("uc_nao_clicavel", f"Não achei a seta pra abrir a UC {uc_codigo}.")
+        seta = icones[-1]
+    _clicar(driver, seta)
     time.sleep(3)
 
 
@@ -395,13 +425,21 @@ def abrir_falta_energia(driver, telefone, ponto_referencia):
     Iluminação Pública, usando sempre as duas respostas padrão da equipe
     (ver protocolos.PERGUNTAS_PADRAO_FALTA_ENERGIA) até o envio real.
     Precisa já estar no contexto da UC certa (ver navegar_ate_uc)."""
-    menu = WebDriverWait(driver, 20).until(
-        EC.element_to_be_clickable((By.XPATH, "//button[contains(.,'Para a Unidade Consumidora')]"))
-    )
-    _clicar(driver, menu)
-    time.sleep(0.5)
-    clicar_texto_exato(driver, "Falta de Energia ou Iluminação Pública")
-    time.sleep(2)
+    # Rota confirmada ao vivo (19/11): #/home/servicos/falta-de-energia. Muda só
+    # o hash (SPA), mantendo a UC selecionada; se a tela não abrir, cai no menu.
+    driver.execute_script("window.location.hash = '#/home/servicos/falta-de-energia';")
+    try:
+        WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.XPATH, "//*[contains(.,'Apenas na minha unidade consumidora')]"))
+        )
+    except Exception:
+        menu = WebDriverWait(driver, 20).until(
+            EC.element_to_be_clickable((By.XPATH, "//*[self::button or self::a][contains(.,'Para a Unidade Consumidora')]"))
+        )
+        _clicar(driver, menu)
+        time.sleep(0.5)
+        clicar_texto_exato(driver, "Falta de Energia ou Iluminação Pública")
+        time.sleep(2)
 
     # "Onde é a falta de energia?" -> resposta padrão
     clicar_texto_exato(driver, "Não sei se é apenas na minha unidade consumidora.")
@@ -444,7 +482,7 @@ def abrir_falta_energia(driver, telefone, ponto_referencia):
 
 # --- Orquestração: login + navegação até a UC -------------------------------
 
-def logar_e_entrar_na_uc(login_user, login_password, cliente, uc_codigo):
+def logar_e_entrar_na_uc(login_user, login_password, cliente, uc_codigo, exigir_ligada=False):
     """Monta o driver, instala o interceptor, loga (reaproveitando a mesma
     rotina usada pelos módulos de Faturas/Protocolos) e entra no contexto da
     UC. Devolve o driver pronto pra chamar abrir_reclamacao_ouvidoria ou
@@ -460,7 +498,7 @@ def logar_e_entrar_na_uc(login_user, login_password, cliente, uc_codigo):
         if not token:
             raise ErroAbrirReclamacao("login_falhou", f"Não consegui logar em {cliente}.")
 
-        navegar_ate_uc(driver, uc_codigo)
+        navegar_ate_uc(driver, uc_codigo, exigir_ligada=exigir_ligada)
         return driver
     except ErroAbrirReclamacao:
         driver.quit()

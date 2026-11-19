@@ -1106,9 +1106,10 @@ def processar_fila_reclamacoes(credenciais_por_cliente):
             uc_principal = (linha[idx["UCs Incluidas"]] or "").split(",")[0].strip()
             try:
                 if driver is None:
-                    driver = logar_e_entrar_na_uc(login_user, login_password, cliente, uc_principal)
+                    driver = logar_e_entrar_na_uc(login_user, login_password, cliente, uc_principal,
+                                                  exigir_ligada="Falta de Energia" in tipo)
                 else:
-                    navegar_ate_uc(driver, uc_principal)
+                    navegar_ate_uc(driver, uc_principal, exigir_ligada="Falta de Energia" in tipo)
 
                 if "Falta de Energia" in tipo:
                     resultado = abrir_falta_energia(
