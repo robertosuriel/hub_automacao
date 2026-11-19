@@ -400,7 +400,12 @@ def navegar_ate_uc(driver, uc_codigo, timeout=30, exigir_ligada=False):
             driver.refresh()
             time.sleep(4)
 
-    status = (item.get_attribute("textContent") or "").upper()
+    texto_item = item.get_attribute("textContent") or ""
+    status = texto_item.upper()
+    # Guarda o NUC (ex: 9.619.551.028-57) da UC escolhida: as telas seguintes
+    # mostram esse número e usamos pra conferir que entramos na UC certa.
+    m_nuc = re.search(r"\d\.\d{3}\.\d{3}\.\d{3}-\d{2}", texto_item)
+    driver._uc_nuc = m_nuc.group(0) if m_nuc else ""
     if exigir_ligada and "DESLIGADA" in status:
         raise ErroAbrirReclamacao(
             "uc_desligada",
@@ -533,6 +538,20 @@ def abrir_falta_energia(driver, telefone, ponto_referencia):
         time.sleep(0.5)
         clicar_texto_exato(driver, "Falta de Energia ou Iluminação Pública")
         time.sleep(2)
+
+    # Trava de segurança: a tela tem que mostrar o NUC da UC que escolhemos.
+    # Se mostrar outra (estado antigo do site), NÃO segue — evita abrir
+    # Falta de Energia na UC errada.
+    nuc_esperado = getattr(driver, "_uc_nuc", "")
+    if nuc_esperado:
+        texto_tela = driver.find_element(By.TAG_NAME, "body").text
+        if nuc_esperado not in texto_tela:
+            achado = re.search(r"\d\.\d{3}\.\d{3}\.\d{3}-\d{2}", texto_tela)
+            raise ErroAbrirReclamacao(
+                "uc_errada",
+                f"A tela de Falta de Energia mostra a UC {achado.group(0) if achado else '?'}, "
+                f"mas eu escolhi a UC com NUC {nuc_esperado}. Não enviei nada.",
+            )
 
     # "Onde é a falta de energia?" -> resposta padrão
     selecionar_opcao_simples(driver, "Não sei se é apenas na minha unidade consumidora.")
