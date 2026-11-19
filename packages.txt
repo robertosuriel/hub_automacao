@@ -18,3 +18,4 @@ libxshmfence1
 libu2f-udev
 libvulkan1
 fonts-liberation
+poppler-utils

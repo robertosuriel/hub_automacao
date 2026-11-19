@@ -986,6 +986,186 @@ def registrar_reclamacao_na_fila(tipo_solicitacao, beneficiaria_ou_geradora, cli
     return True
 
 
+# --- Aprendizado dos códigos internos da Ouvidoria --------------------------
+# A Coelba exige codificacao/tipificacao/grupoCodificacao no POST de
+# cadastrar-ouvidoria, mas não sabemos esses códigos pra cada um dos 18
+# Motivos — só descobrimos interceptando a chamada de rede durante um envio
+# real (ver abrir_reclamacao.py). Essa aba guarda cada par Motivo+Detalhe já
+# visto, pra eventualmente trocar o robô de "clicar na UI" por uma chamada
+# de API direta nos casos já conhecidos.
+ABA_CODIGOS_RECLAMACAO = "Códigos Reclamação Capturados"
+CABECALHO_CODIGOS_RECLAMACAO = [
+    "Motivo Principal", "Detalhes do Motivo", "codificacao", "tipificacao",
+    "grupoCodificacao", "Capturado em", "Protocolo exemplo",
+]
+
+
+def registrar_codigo_capturado(motivo_principal, detalhes_motivo, payload_capturado, protocolo_exemplo=""):
+    """Grava (ou atualiza) na aba de referência o código interno capturado
+    pra esse par Motivo+Detalhe. Não falha o fluxo principal se der erro —
+    aprender o código é um bônus, não pode travar o envio que já funcionou."""
+    try:
+        codificacao = payload_capturado.get("codificacao", "")
+        tipificacao = payload_capturado.get("tipificacao", "")
+        grupo = payload_capturado.get("grupoCodificacao", "")
+        if not (codificacao or tipificacao or grupo):
+            return False
+
+        client = autenticar_google_sheets()
+        planilha = client.open_by_key(PROTOCOLOS_SPREADSHEET_ID)
+        try:
+            aba = planilha.worksheet(ABA_CODIGOS_RECLAMACAO)
+        except Exception:
+            aba = planilha.add_worksheet(title=ABA_CODIGOS_RECLAMACAO, rows=100, cols=len(CABECALHO_CODIGOS_RECLAMACAO))
+            aba.update(range_name="A1", values=[CABECALHO_CODIGOS_RECLAMACAO], value_input_option="RAW")
+
+        valores = aba.get_all_values()
+        for i, linha in enumerate(valores[1:], start=2):
+            if len(linha) >= 2 and linha[0] == motivo_principal and linha[1] == detalhes_motivo:
+                return True  # já tinha esse par — não duplica
+
+        nova_linha = [
+            motivo_principal, detalhes_motivo, str(codificacao), str(tipificacao), str(grupo),
+            datetime.now().strftime("%d/%m/%Y %H:%M"), protocolo_exemplo,
+        ]
+        aba.append_rows([nova_linha], value_input_option="RAW", table_range="A1")
+        return True
+    except Exception as e:
+        print(f"  ⚠️ Não consegui registrar o código capturado: {e}")
+        return False
+
+
+def carregar_codigos_reclamacao_conhecidos(client_sheets=None):
+    """Lê a aba de códigos já capturados. Retorna dict (motivo, detalhe) ->
+    {'codificacao', 'tipificacao', 'grupoCodificacao'}."""
+    client_sheets = client_sheets or autenticar_google_sheets()
+    try:
+        planilha = client_sheets.open_by_key(PROTOCOLOS_SPREADSHEET_ID)
+        valores = planilha.worksheet(ABA_CODIGOS_RECLAMACAO).get_all_values()
+    except Exception:
+        return {}
+    conhecidos = {}
+    for linha in valores[1:]:
+        if len(linha) < 5:
+            continue
+        conhecidos[(linha[0], linha[1])] = {
+            "codificacao": linha[2], "tipificacao": linha[3], "grupoCodificacao": linha[4],
+        }
+    return conhecidos
+
+
+# --- Processamento real da Fila de Reclamações (Selenium) ------------------
+
+def _indice_colunas_fila():
+    return {nome: i for i, nome in enumerate(CABECALHO_FILA_RECLAMACOES)}
+
+
+def processar_fila_reclamacoes(credenciais_por_cliente):
+    """Processa de verdade (Selenium, clicando na UI da Coelba) todas as
+    linhas 'Pendente de envio' da Fila de Reclamações, agrupadas por cliente
+    pra reaproveitar um login só por conta. `credenciais_por_cliente`: dict
+    CLIENTE (maiúsculo) -> (login_user, login_password).
+
+    Devolve lista de dicts com o resultado de cada linha processada, pra
+    quem chamou (o Streamlit) mostrar um relatório. Import de
+    abrir_reclamacao fica aqui dentro pra não puxar Selenium em todo mundo
+    que só importa protocolos.py."""
+    from abrir_reclamacao import (
+        logar_e_entrar_na_uc, navegar_ate_uc, abrir_reclamacao_ouvidoria,
+        abrir_falta_energia, ErroAbrirReclamacao,
+    )
+
+    client = autenticar_google_sheets()
+    planilha = client.open_by_key(PROTOCOLOS_SPREADSHEET_ID)
+    aba = planilha.worksheet(ABA_FILA_RECLAMACOES)
+    valores = aba.get_all_values()
+    if len(valores) < 2:
+        return []
+
+    idx = _indice_colunas_fila()
+    pendentes_por_cliente = {}
+    for num_linha, linha in enumerate(valores[1:], start=2):
+        if len(linha) <= idx["Status"] or linha[idx["Status"]].strip() != STATUS_FILA_PENDENTE:
+            continue
+        cliente = linha[idx["Cliente"]].strip().upper()
+        pendentes_por_cliente.setdefault(cliente, []).append((num_linha, linha))
+
+    resultados = []
+    for cliente, linhas_cliente in pendentes_por_cliente.items():
+        creds = credenciais_por_cliente.get(cliente)
+        if not creds:
+            for num_linha, _ in linhas_cliente:
+                resultados.append({"linha": num_linha, "cliente": cliente, "ok": False,
+                                    "erro": "sem_credencial", "detalhe": f"Sem login cadastrado pra {cliente}."})
+            continue
+        login_user, login_password = creds
+
+        driver = None
+        for num_linha, linha in linhas_cliente:
+            tipo = linha[idx["Tipo de Solicitação"]]
+            uc_principal = (linha[idx["UCs Incluidas"]] or "").split(",")[0].strip()
+            try:
+                if driver is None:
+                    driver = logar_e_entrar_na_uc(login_user, login_password, cliente, uc_principal)
+                else:
+                    navegar_ate_uc(driver, uc_principal)
+
+                if "Falta de Energia" in tipo:
+                    resultado = abrir_falta_energia(
+                        driver, telefone=linha[idx["Telefone para Contato"]],
+                        ponto_referencia=linha[idx["Ponto de Referencia"]],
+                    )
+                    aba.update_cell(num_linha, idx["Status"] + 1, "Enviado")
+                    aba.update_cell(num_linha, idx["Protocolo Coelba"] + 1, resultado.get("ocorrencia", ""))
+                    aba.update_cell(num_linha, idx["Prazo Coelba"] + 1, resultado.get("data_combinada", ""))
+                else:
+                    relato = linha[idx["Relato da Manifestação"]]
+                    observacao = linha[idx["Observação"]]
+                    if observacao:
+                        relato = f"{relato} {observacao}".strip()
+                    resultado = abrir_reclamacao_ouvidoria(
+                        driver, motivo_principal=linha[idx["Motivo Principal"]],
+                        detalhes_motivo=linha[idx["Detalhes do Motivo"]], relato=relato,
+                        telefone=linha[idx["Telefone para Contato"]],
+                        email_resposta=linha[idx["E-mail para Resposta"]],
+                        protocolo_anterior=linha[idx["Protocolo Anterior"]],
+                    )
+                    aba.update_cell(num_linha, idx["Status"] + 1, "Enviado")
+                    aba.update_cell(num_linha, idx["Protocolo Coelba"] + 1, resultado.get("numero_manifestacao", ""))
+                    for payload in resultado.get("payload_capturado", []):
+                        corpo = payload.get("body") or {}
+                        if isinstance(corpo, dict) and "codificacao" in corpo:
+                            registrar_codigo_capturado(
+                                linha[idx["Motivo Principal"]], linha[idx["Detalhes do Motivo"]],
+                                corpo, protocolo_exemplo=resultado.get("numero_manifestacao", ""),
+                            )
+
+                resultados.append({"linha": num_linha, "cliente": cliente, "ok": True, "resultado": resultado})
+            except ErroAbrirReclamacao as e:
+                aba.update_cell(num_linha, idx["Status"] + 1, f"Erro: {e.motivo}")
+                aba.update_cell(num_linha, idx["Observação"] + 1, (linha[idx["Observação"]] + f" | {e.detalhe}").strip(" |"))
+                resultados.append({"linha": num_linha, "cliente": cliente, "ok": False, "erro": e.motivo, "detalhe": e.detalhe})
+            except Exception as e:
+                aba.update_cell(num_linha, idx["Status"] + 1, "Erro: inesperado")
+                resultados.append({"linha": num_linha, "cliente": cliente, "ok": False,
+                                    "erro": "inesperado", "detalhe": f"{type(e).__name__}: {str(e)[:200]}"})
+                if driver:
+                    try:
+                        driver.save_screenshot(f"erro_reclamacao_{cliente}_{num_linha}.png")
+                        driver.quit()
+                    except Exception:
+                        pass
+                driver = None  # próxima linha desse cliente loga de novo
+
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+    return resultados
+
+
 def construir_catalogo_ucs(client_sheets=None):
     """Monta o catálogo de UCs pra alimentar a busca do módulo 'Abrir
     Reclamação' (Nome Cliente / NUC / Usina Atrelada), a partir da aba

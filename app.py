@@ -29,6 +29,7 @@ from protocolos import (
     TIPOS_SOLICITACAO_RECLAMACAO, construir_catalogo_ucs, contar_chamados_por_uc,
     normalizar_numero, autenticar_google_sheets, PROTOCOLOS_SPREADSHEET_ID, ABA_FILA_RECLAMACOES,
     TELEFONES_RECLAMACAO, EMAILS_RECLAMACAO, PERGUNTAS_PADRAO_FALTA_ENERGIA,
+    processar_fila_reclamacoes,
 )
 
 load_dotenv(".env")
@@ -142,7 +143,7 @@ modulo_selecionado = st.sidebar.radio(
     "Escolha o processo:",
     [
         "1. Extrair Faturas (Coelba)", "2. Gerar PDFs 'PAGO'", "3. Acompanhar Protocolos (Coelba)",
-        "4. Abrir Reclamação (Coelba)",
+        "4. Abrir Reclamação (Coelba)", "5. Auditoria de Geração (Target × Inversor × Coelba)",
     ]
 )
 
@@ -157,7 +158,7 @@ st.markdown(f"""
 
 
 # --- OPÇÕES DE SELEÇÃO DE CLIENTES (módulos 1-3, que processam clientes em lote) ---
-if "Abrir Reclamação" not in modulo_selecionado:
+if "Abrir Reclamação" not in modulo_selecionado and "Auditoria de Geração" not in modulo_selecionado:
     col1, col2 = st.columns([1, 2])
     with col1:
         modo = st.radio("Modo de Execução:", ["Rodar Todos", "Selecionar Específicos"])
@@ -969,7 +970,44 @@ elif "Abrir Reclamação" in modulo_selecionado:
         if len(_valores_fila) > 1:
             df_fila = pd.DataFrame(_valores_fila[1:], columns=_valores_fila[0])
             st.dataframe(df_fila, use_container_width=True, hide_index=True)
+            n_pendentes = (df_fila["Status"] == "Pendente de envio").sum() if "Status" in df_fila.columns else 0
         else:
             st.info("Fila vazia por enquanto.")
+            n_pendentes = 0
     except Exception:
         st.info("A aba 'Fila de Reclamações' ainda não existe — ela é criada automaticamente no primeiro registro.")
+        n_pendentes = 0
+
+    st.markdown("##### 🚀 Enviar de verdade pra Coelba")
+    st.caption(
+        "Clica na UI da Coelba de verdade (Selenium) pra cada linha 'Pendente de envio' — ainda é novo, "
+        "testado só até o penúltimo passo de cada fluxo (nunca um envio real de ponta a ponta). "
+        "Motivo 'Faturas' continua caindo pra fila manual (precisa de dado real de fatura)."
+    )
+    if st.button(f"🚀 Processar fila agora ({n_pendentes} pendente(s))", disabled=n_pendentes == 0):
+        credenciais_por_cliente = {}
+        for cli in clientes_disponiveis:
+            try:
+                credenciais_por_cliente[cli.upper()] = (
+                    str(st.secrets[f"{cli.upper()}_LOGIN_USER"]), str(st.secrets[f"{cli.upper()}_LOGIN_PASSWORD"]),
+                )
+            except KeyError:
+                pass
+        with st.spinner("Abrindo o Chrome e preenchendo os passos na Coelba... pode demorar alguns minutos."):
+            resultados = processar_fila_reclamacoes(credenciais_por_cliente)
+        if not resultados:
+            st.info("Nada processado — confira se as credenciais dos clientes estão nos secrets.")
+        for r in resultados:
+            if r["ok"]:
+                st.success(f"✅ Linha {r['linha']} ({r['cliente']}): enviado. {r['resultado']}")
+            else:
+                st.error(f"❌ Linha {r['linha']} ({r['cliente']}): {r['erro']} — {r.get('detalhe', '')}")
+        st.rerun()
+
+
+# ==========================================
+# MÓDULO 5: AUDITORIA DE GERAÇÃO (Target × Inversor × Coelba)
+# ==========================================
+elif "Auditoria de Geração" in modulo_selecionado:
+    from auditoria_geracao.tela import render as render_auditoria_geracao
+    render_auditoria_geracao()
