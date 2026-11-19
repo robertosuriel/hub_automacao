@@ -256,12 +256,21 @@ def navegar_ate_uc(driver, uc_codigo, timeout=30):
             (By.XPATH, "//input[contains(@placeholder,'Código do Cliente') or contains(@placeholder,'Unidade Consumidora')]")
         )
     )
+    # A planilha perde os zeros à esquerda (Sheets trata como número); a Coelba
+    # usa 12 dígitos (ex: 007087003102). Completa antes de buscar.
+    uc_codigo = str(uc_codigo).strip()
+    if uc_codigo.isdigit() and len(uc_codigo) < 12:
+        uc_codigo = uc_codigo.zfill(12)
+    uc_sem_zeros = uc_codigo.lstrip("0") or uc_codigo
+
     campo_busca.clear()
     campo_busca.send_keys(uc_codigo)
     time.sleep(1.5)
 
     linha = WebDriverWait(driver, timeout).until(
-        EC.presence_of_element_located((By.XPATH, f"//*[contains(text(),'{uc_codigo}')]"))
+        EC.presence_of_element_located(
+            (By.XPATH, f"//*[contains(text(),'{uc_codigo}') or contains(text(),'{uc_sem_zeros}')]")
+        )
     )
     # Sobe até o container da linha/card e clica no último elemento clicável
     # dela (tipicamente a seta ">" que abre a UC).
