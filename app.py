@@ -1005,14 +1005,19 @@ elif "Abrir Reclamação" in modulo_selecionado:
                 pass
         with st.spinner("Abrindo o Chrome e preenchendo os passos na Coelba... pode demorar alguns minutos."):
             resultados = processar_fila_reclamacoes(credenciais_por_cliente)
-        if not resultados:
+        # Guarda pra mostrar depois do rerun (senão o rerun apaga as mensagens).
+        st.session_state["rec_ultimos_resultados"] = resultados
+        st.rerun()
+
+    _ultimos = st.session_state.get("rec_ultimos_resultados")
+    if _ultimos is not None:
+        if not _ultimos:
             st.info("Nada processado — confira se as credenciais dos clientes estão nos secrets.")
-        for r in resultados:
+        for r in _ultimos:
             if r["ok"]:
                 st.success(f"✅ Linha {r['linha']} ({r['cliente']}): enviado. {r['resultado']}")
             else:
                 st.error(f"❌ Linha {r['linha']} ({r['cliente']}): {r['erro']} — {r.get('detalhe', '')}")
-        st.rerun()
 
 
 # ==========================================
