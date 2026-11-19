@@ -226,6 +226,47 @@ def selecionar_opcao_simples(driver, texto, timeout=15):
     )
 
 
+def _norm(txt):
+    return "".join(c for c in unicodedata.normalize("NFD", (txt or "").lower()) if unicodedata.category(c) != "Mn")
+
+
+def preencher_dados_contato(driver, telefone, ponto_referencia, timeout=20):
+    """Tela 'Dados para contato' (rota .../falta-de-energia/dados-contato):
+    NÚMERO DE CELULAR + PONTO DE REFERÊNCIA. Não depende de <mat-label>:
+    acha os inputs visíveis, identifica cada um pelo texto do rótulo/placeholder
+    (sem acento) e, se não conseguir, usa a ordem (1º celular, 2º referência)."""
+    xp = "//app-root//input[not(@type='hidden') and not(@type='radio') and not(@type='checkbox')]"
+    campos = WebDriverWait(driver, timeout).until(
+        lambda d: (lambda lst: lst if len(lst) >= 2 else False)([i for i in d.find_elements(By.XPATH, xp) if i.is_displayed()])
+    )
+    rotulos = [
+        _norm(driver.execute_script(
+            "let e=arguments[0]; let c=e.closest('mat-form-field')||e.parentElement.parentElement;"
+            "return (c?c.innerText:'')+' '+(e.placeholder||'')+' '+(e.getAttribute('formcontrolname')||'')"
+            "+' '+(e.getAttribute('aria-label')||'')+' '+(e.name||'')+' '+(e.id||'');", c))
+        for c in campos
+    ]
+    idx_tel = next((i for i, r in enumerate(rotulos) if "celular" in r or "telefone" in r), 0)
+    idx_ref = next((i for i, r in enumerate(rotulos) if "refer" in r), 1 if idx_tel == 0 else 0)
+    if idx_ref == idx_tel:
+        idx_ref = 1 if idx_tel == 0 else 0
+
+    def digitar(campo, valor):
+        campo.click()
+        campo.send_keys(Keys.CONTROL, "a")
+        campo.send_keys(Keys.DELETE)
+        campo.send_keys(valor)
+
+    digitar(campos[idx_tel], re.sub(r"\D", "", telefone or "") or (telefone or ""))
+    digitar(campos[idx_ref], ponto_referencia or "")
+    if not _continuar_habilitado(driver, espera=4):
+        valores = [c.get_attribute("value") for c in campos]
+        raise ErroAbrirReclamacao(
+            "contato_nao_validou",
+            f"Preenchi os dados de contato mas o Continuar não habilitou. Campos: {rotulos} valores: {valores}",
+        )
+
+
 def clicar_botao(driver, texto_contendo, timeout=15):
     el = WebDriverWait(driver, timeout).until(
         EC.element_to_be_clickable((By.XPATH, _xp_botao(texto_contendo)))
@@ -504,16 +545,23 @@ def abrir_falta_energia(driver, telefone, ponto_referencia):
     time.sleep(1.5)
 
     # Dados de contato
-    preencher_input_por_label(driver, "NUMERO DE CELULAR", telefone)
-    preencher_input_por_label(driver, "PONTO DE REFERENCIA", ponto_referencia)
+    preencher_dados_contato(driver, telefone, ponto_referencia)
     clicar_botao(driver, "Continuar")
+    # Espera sair da tela de contato antes de clicar de novo (o próximo
+    # Continuar é o envio real; não pode ser um duplo clique na mesma tela).
+    WebDriverWait(driver, 20).until(lambda d: "dados-contato" not in d.current_url)
     time.sleep(1.5)
 
     # Confirmação -> Continuar AQUI é o envio real.
     clicar_botao(driver, "Continuar")
-    time.sleep(3)
 
-    payloads = pegar_payloads_capturados(driver)
+    # Espera a resposta do cadastro (até 25s) em vez de um sleep fixo.
+    payloads = []
+    for _ in range(25):
+        time.sleep(1)
+        payloads = pegar_payloads_capturados(driver)
+        if any(isinstance(p.get("body"), dict) and "ocorrencia" in p["body"] for p in payloads):
+            break
 
     protocolo, ocorrencia, data_combinada = "", "", ""
     try:
@@ -526,9 +574,15 @@ def abrir_falta_energia(driver, telefone, ponto_referencia):
             ocorrencia = corpo_resposta.get("ocorrencia", "")
             data_combinada = corpo_resposta.get("dataCombinada", "")
 
+    tela_final = ""
+    if not ocorrencia:
+        try:
+            tela_final = " ".join(driver.find_element(By.TAG_NAME, "body").text.split())[:400]
+        except Exception:
+            pass
     return {
         "protocolo": protocolo, "ocorrencia": ocorrencia, "data_combinada": data_combinada,
-        "payload_capturado": payloads,
+        "payload_capturado": payloads, "tela_final": tela_final,
     }
 
 

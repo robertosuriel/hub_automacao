@@ -1119,6 +1119,11 @@ def processar_fila_reclamacoes(credenciais_por_cliente):
                     aba.update_cell(num_linha, idx["Status"] + 1, "Enviado")
                     aba.update_cell(num_linha, idx["Protocolo Coelba"] + 1, resultado.get("ocorrencia", ""))
                     aba.update_cell(num_linha, idx["Prazo Coelba"] + 1, resultado.get("data_combinada", ""))
+                    if not resultado.get("ocorrencia"):
+                        # Enviou mas não capturei o nº da ocorrência: guarda a tela final pra conferir.
+                        aba.update_cell(num_linha, idx["Observação"] + 1,
+                                        (linha[idx["Observação"]] + " | Sem nº de ocorrência capturado. Tela final: "
+                                         + resultado.get("tela_final", "")).strip(" |"))
                 else:
                     relato = linha[idx["Relato da Manifestação"]]
                     observacao = linha[idx["Observação"]]
