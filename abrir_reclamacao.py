@@ -223,7 +223,17 @@ def descrever_falha(driver, e):
     try:
         partes.append(f"URL: {driver.current_url}")
         texto = driver.find_element(By.TAG_NAME, "body").text
-        partes.append("TELA: " + " ".join(texto.split())[:350])
+        texto = " ".join(texto.split())
+        # Pula o cabeçalho (menu) e mostra o conteúdo útil, a partir da busca.
+        pos = texto.find("Pesquisar")
+        partes.append("TELA: " + (texto[pos:pos + 600] if pos >= 0 else texto[:600]))
+        try:
+            campo = driver.find_element(
+                By.XPATH, "//input[contains(@placeholder,'Código do Cliente') or contains(@placeholder,'Unidade Consumidora')]"
+            )
+            partes.append(f"CAMPO BUSCA='{campo.get_attribute('value')}'")
+        except Exception:
+            pass
     except Exception:
         pass
     return " | ".join(partes)
