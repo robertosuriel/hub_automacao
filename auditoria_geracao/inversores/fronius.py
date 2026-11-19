@@ -9,6 +9,7 @@ import requests
 
 
 class Fronius:
+    paralelo = True
     def __init__(self, key_id, key_value, base_url="https://api.solarweb.com/swqapi"):
         self.h = {"accept": "application/json", "AccessKeyId": key_id, "AccessKeyValue": key_value}
         self.base = base_url.rstrip("/")

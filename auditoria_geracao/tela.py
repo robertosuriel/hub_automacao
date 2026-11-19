@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from .cadastro import USINAS
-from .calculo import AMARELO, CINZA, VERDE, VERMELHO, Linha, montar_linha, observacoes, periodo
+from .calculo import AMARELO, CINZA, NEUTRO, VERDE, VERMELHO, Linha, montar_linha, observacoes, periodo
 from .faturas import carregar_controle, obter_fatura
 from .inversores import coletar, montar_conectores
 from .inversores.manual import SerieManual
@@ -18,7 +18,7 @@ from .targets import Targets
 
 MESES = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro",
          "novembro", "dezembro"]
-EMOJI = {VERMELHO: "🔴", AMARELO: "🟡", VERDE: "🟢", CINZA: "⚪"}
+EMOJI = {VERMELHO: "🔴", AMARELO: "🟡", VERDE: "🟢", NEUTRO: "🔹", CINZA: "⚪"}
 
 CRITERIOS = [
     "Coelba ÷ Inversor: quanto mais perto de 100%, mais consistente. Verde 95–105% • Vermelho < 90% • Amarelo > 110%.",
@@ -134,7 +134,7 @@ def render():
             for a in r["avisos"]:
                 st.write("• " + a)
     tabela = pd.DataFrame([{
-        "": EMOJI[l.cor], "Usina": l.usina.nome, "Ref.": l.mes_ref, "Dias": l.dias,
+        "": EMOJI.get(l.cor, "⚪"), "Usina": l.usina.nome, "Ref.": l.mes_ref, "Dias": l.dias,
         "Target": l.target, "Inversor": l.inversor, "Coelba": l.coelba, "Origem": l.origem_coelba,
         "Coelba ÷ Inversor": l.razao, "Inversor × Target": l.inv_x_target, "Coelba × Target": l.coelba_x_target,
         "Obs.": observacoes(l)} for l in linhas])

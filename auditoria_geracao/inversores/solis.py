@@ -1,8 +1,13 @@
-"""SolisCloud Platform API (HMAC-SHA1). Doc: pedir KeyID/KeySecret ao suporte da Solis."""
+"""SolisCloud Platform API v2.0 (HMAC-SHA1).
+
+Assinatura e parâmetros conferidos contra o cliente open source hultenvp/soliscloud_api. A API exige relógio
+local dentro de 15 min do servidor (senão HTTP 408). Formato da resposta (data[].dateStr / energy) a confirmar
+quando as chaves existirem."""
 import base64
 import hashlib
 import hmac
 import json
+import time
 from datetime import date, datetime, timezone
 
 import requests
@@ -30,8 +35,9 @@ class Solis:
     def daily_energy(self, plant_id, start: date, end: date):
         out, y, m = {}, start.year, start.month
         while (y, m) <= (end.year, end.month):
-            j = self._post("/v1/api/stationMonth", {"id": str(plant_id), "money": "BRL",
-                                                    "month": f"{y}-{m:02d}", "timeZone": -3})
+            j = self._post("/v1/api/stationMonth", {"id": int(plant_id), "money": "BRL",
+                                                    "month": f"{y}-{m:02d}"})
+            time.sleep(0.6)  # a API aceita no máx. 2 requisições por segundo
             for it in j.get("data") or []:
                 d = date.fromisoformat(it["dateStr"])
                 if start <= d <= end and it.get("energy") is not None:

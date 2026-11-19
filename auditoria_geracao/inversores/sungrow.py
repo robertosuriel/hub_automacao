@@ -2,9 +2,9 @@
 
 - Login: POST /openapi/login com `appkey` no corpo e o header `x-access-key` = chave secreta da aplicação.
 - Usinas: getPowerStationList (nome -> ps_id); inversores: getDeviceList (device_type_list=[1]) -> ps_key.
-- Energia diária: getDevicePointMinuteDataList, ponto p1 = geração ACUMULADA DO DIA em Wh por inversor
-  (zera à meia-noite). Energia do dia da usina = soma, entre inversores, do maior p1 do dia.
-  A API só aceita janelas de até 3h por chamada, então consultamos o último bloco do dia (21h–23h59).
+- Energia diária: getDevicePointsDayMonthYearDataList (query_type=1 dia, data_type=2 máximo do dia, ponto p1 = geração
+  acumulada do dia em Wh por inversor), UMA chamada por usina e período; soma entre os inversores. Validado em
+  19/11/2026: Itaguaçu 1, 25/09-26/10 = 16.852,2 kWh (igual ao portal); 19 usinas em ~24 s.
 """
 import time
 from datetime import date, datetime, timedelta
@@ -13,6 +13,7 @@ import requests
 
 
 class Sungrow:
+    paralelo = True  # várias usinas ao mesmo tempo (a lista de usinas e o login são feitos em preparar())
     BLOCOS_FINAIS = [("210000", "235959"), ("180000", "205959")]  # o 2º só se o 1º vier vazio
 
     def __init__(self, appkey, secret_key, email, senha, base_url="https://gateway.isolarcloud.com.hk"):
@@ -63,16 +64,25 @@ class Sungrow:
             raise RuntimeError(f"iSolarCloud login: {j.get('result_msg')}")
         self.token = j["result_data"]["token"]
 
-    def _ps_id(self, nome):
+    def _carregar_usinas(self):
         if self._usinas is None:
-            self._usinas, pagina = {}, 1
+            usinas, pagina = {}, 1
             while True:
                 d = self._post("/openapi/getPowerStationList", {"curPage": pagina, "size": 100})
                 lote = d.get("pageList", [])
-                self._usinas.update({p["ps_name"].strip(): str(p["ps_id"]) for p in lote})
-                if not lote or len(self._usinas) >= int(d.get("rowCount", 0)):
+                usinas.update({p["ps_name"].strip(): str(p["ps_id"]) for p in lote})
+                if not lote or len(usinas) >= int(d.get("rowCount", 0)):
                     break
                 pagina += 1
+            self._usinas = usinas
+
+    def preparar(self):
+        """Login + lista de usinas, feitos uma vez antes de abrir as threads."""
+        self._login()
+        self._carregar_usinas()
+
+    def _ps_id(self, nome):
+        self._carregar_usinas()
         if nome not in self._usinas:
             raise KeyError(f"usina {nome} não existe na conta iSolarCloud")
         return self._usinas[nome]
@@ -83,29 +93,27 @@ class Sungrow:
             self._ps_keys[ps_id] = [x["ps_key"] for x in d.get("pageList", [])]
         return self._ps_keys[ps_id]
 
-    def _energia_do_dia(self, chaves, dia: date):
-        """kWh do dia (soma dos inversores) ou None se o portal não devolveu dados."""
-        for ini, fim in self.BLOCOS_FINAIS:
-            d = self._post("/openapi/getDevicePointMinuteDataList", {
-                "start_time_stamp": dia.strftime("%Y%m%d") + ini, "end_time_stamp": dia.strftime("%Y%m%d") + fim,
-                "ps_key_list": chaves, "points": "p1", "minute_interval": 60, "is_get_data_acquisition_time": "1"})
-            total, achou = 0.0, False
-            for registros in (d or {}).values():
-                vals = [float(x["p1"]) for x in registros if x.get("p1") not in (None, "")]
-                if vals:
-                    total += max(vals)
-                    achou = True
-            if achou:
-                return total / 1000.0
-        return None
+    def _serie_periodo(self, chaves, ini: date, fim: date):
+        """Série diária (kWh) do período em UMA chamada: getDevicePointsDayMonthYearDataList com query_type=1 (dia),
+        data_type=2 (máximo do dia) e ponto p1 (geração acumulada do dia, Wh, por inversor). Soma entre inversores."""
+        d = self._post("/openapi/getDevicePointsDayMonthYearDataList", {
+            "ps_key_list": chaves, "points": "p1", "data_point": "p1", "data_type": "2", "query_type": "1",
+            "start_time": ini.strftime("%Y%m%d"), "end_time": fim.strftime("%Y%m%d"), "order": "0"})
+        out = {}
+        for pontos in (d or {}).values():
+            for it in pontos.get("p1", []):
+                wh = it.get("2")
+                if wh in (None, ""):
+                    continue
+                dia = datetime.strptime(it["time_stamp"], "%Y%m%d").date()
+                out[dia] = out.get(dia, 0.0) + float(wh) / 1000.0
+        return out
 
     def daily_energy(self, plant_id, start: date, end: date):
         chaves = self._chaves_inversores(self._ps_id(plant_id))
-        out, dia = {}, start
-        while dia <= end:
-            kwh = self._energia_do_dia(chaves, dia)
-            if kwh is not None:
-                out[dia] = kwh
-            dia += timedelta(1)
-            time.sleep(0.3)
-        return out
+        out, ini = {}, start
+        while ini <= end:  # em blocos de 31 dias por precaução com o limite da API
+            fim = min(end, ini + timedelta(days=30))
+            out.update(self._serie_periodo(chaves, ini, fim))
+            ini = fim + timedelta(days=1)
+        return {d: v for d, v in out.items() if v > 0}
