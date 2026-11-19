@@ -63,17 +63,33 @@ ABA_FILA_RECLAMACOES = "Fila de Reclamações"
 # real a abrir (já agrupado); "UCs Incluidas" guarda todas as UCs cobertas.
 # "E-mail para Resposta" foi adicionado depois de confirmar ao vivo que a
 # Coelba exige esse campo (passo "E-mail", antes de Dados Adicionais).
+# "Endereco Referencia" e "Prazo Coelba" vieram do documento de referência da
+# equipe pra Falta de Energia: como esse tipo de solicitação NÃO dá pra
+# consultar depois pela Agência Virtual (confirmado em outro documento da
+# equipe, "Consulta de Reclamações"), o Protocolo e o Prazo devolvidos na
+# hora de abrir são a ÚNICA chance de registrar isso — por isso ficam como
+# colunas pra quem abrir manualmente preencher na volta.
 CABECALHO_FILA_RECLAMACOES = [
     "Status", "Data de Criação", "Criado por", "Tipo de Solicitação",
     "Beneficiária ou Geradora", "Cliente", "UCs Incluidas", "Usina Atrelada",
     "Motivo Principal", "Detalhes do Motivo", "Relato da Manifestação",
-    "Telefone para Contato", "E-mail para Resposta", "Ponto de Referencia",
-    "Protocolo Anterior", "Responsável por Abrir", "Observação",
-    "Mes de Referencia", "Data de Vencimento", "Valor da Fatura", "Protocolo Coelba",
+    "Telefone para Contato", "E-mail para Resposta", "Endereco Referencia",
+    "Ponto de Referencia", "Protocolo Anterior", "Responsável por Abrir",
+    "Observação", "Mes de Referencia", "Data de Vencimento", "Valor da Fatura",
+    "Protocolo Coelba", "Prazo Coelba",
 ]
 STATUS_FILA_PENDENTE = "Pendente de envio"
 
 TIPOS_SOLICITACAO_RECLAMACAO = ["Ouvidoria (Reclamação)", "Falta de Energia"]
+
+# Perguntas de resposta padrão no fluxo de Falta de Energia da Coelba (ver
+# documento de referência da equipe, "Falta de energia.pdf") — a equipe
+# sempre responde do mesmo jeito, então ficam fixas aqui só pra orientar
+# quem for abrir manualmente, sem virar campo de formulário.
+PERGUNTAS_PADRAO_FALTA_ENERGIA = [
+    ("A falta de energia atinge outras unidades também?", "Não sei se é apenas na minha unidade consumidora."),
+    ("Pergunta seguinte do fluxo", "Não sei"),
+]
 
 # Motivo Principal: as 18 opções exatas do dropdown da Ouvidoria. Detalhes do
 # Motivo depende do Motivo Principal escolhido — mapeado em 13/11 via Claude
@@ -928,9 +944,9 @@ def atualizar_aba_ucs_depara(planilha, cliente, ucs):
 
 def registrar_reclamacao_na_fila(tipo_solicitacao, beneficiaria_ou_geradora, cliente, ucs_incluidas,
                                    usina, motivo_principal, detalhes_motivo, relato, telefone,
-                                   email_resposta="", ponto_referencia="", protocolo_anterior="",
-                                   responsavel="", observacao="", mes_referencia="", data_vencimento="",
-                                   valor_fatura="", criado_por=""):
+                                   email_resposta="", endereco_referencia="", ponto_referencia="",
+                                   protocolo_anterior="", responsavel="", observacao="",
+                                   mes_referencia="", data_vencimento="", valor_fatura="", criado_por=""):
     """Grava um chamado rascunhado pelo formulário do Hub na aba 'Fila de
     Reclamações', com status 'Pendente de envio'. Uma chamada == um chamado
     real a abrir na Coelba; `ucs_incluidas` já vem com todas as UCs cobertas
@@ -957,9 +973,9 @@ def registrar_reclamacao_na_fila(tipo_solicitacao, beneficiaria_ou_geradora, cli
     linha = [
         STATUS_FILA_PENDENTE, datetime.now().strftime("%d/%m/%Y %H:%M"), criado_por,
         tipo_solicitacao, beneficiaria_ou_geradora, cliente.upper(), ucs_incluidas, usina,
-        motivo_principal, detalhes_motivo, relato, telefone, email_resposta, ponto_referencia,
-        protocolo_anterior, responsavel, observacao, mes_referencia, data_vencimento,
-        valor_fatura, "",
+        motivo_principal, detalhes_motivo, relato, telefone, email_resposta, endereco_referencia,
+        ponto_referencia, protocolo_anterior, responsavel, observacao, mes_referencia,
+        data_vencimento, valor_fatura, "", "",
     ]
     # USER_ENTERED: time prefere ver os códigos de UC sem zero à esquerda
     # (007099424626 -> 7099424626) nessa aba, por costume visual.

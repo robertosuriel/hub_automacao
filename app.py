@@ -28,7 +28,7 @@ from protocolos import (
     MOTIVOS_PRINCIPAIS_RECLAMACAO, DETALHES_MOTIVO_RECLAMACAO, MOTIVOS_COM_PASSO_FATURA,
     TIPOS_SOLICITACAO_RECLAMACAO, construir_catalogo_ucs, contar_chamados_por_uc,
     normalizar_numero, autenticar_google_sheets, PROTOCOLOS_SPREADSHEET_ID, ABA_FILA_RECLAMACOES,
-    TELEFONES_RECLAMACAO, EMAILS_RECLAMACAO,
+    TELEFONES_RECLAMACAO, EMAILS_RECLAMACAO, PERGUNTAS_PADRAO_FALTA_ENERGIA,
 )
 
 load_dotenv(".env")
@@ -872,8 +872,25 @@ elif "Abrir Reclamação" in modulo_selecionado:
             email_resposta = opcao_email
 
         ponto_referencia = ""
+        endereco_referencia = ""
         if tipo == "Falta de Energia":
+            enderecos = sorted({s["endereco"] for s in selecionados if s["endereco"]})
+            endereco_referencia = " | ".join(enderecos)
+            if endereco_referencia:
+                st.text_input(
+                    "Endereço cadastrado da UC (referência pra quem for abrir):",
+                    value=endereco_referencia, disabled=True, key="rec5_endereco_ref",
+                )
             ponto_referencia = st.text_input("Ponto de Referência (poste / latitude,longitude):", key="rec5_ponto_ref")
+            with st.expander("📋 Respostas padrão da equipe pra essas perguntas do site (ver referência)"):
+                for pergunta, resposta in PERGUNTAS_PADRAO_FALTA_ENERGIA:
+                    st.markdown(f"**{pergunta}**  \n{resposta}")
+            st.info(
+                "⚠️ Falta de Energia não dá pra consultar depois pela Agência Virtual — o Protocolo e o "
+                "Prazo que a Coelba devolver na hora de abrir são a única chance de registrar isso. "
+                "Depois de abrir manualmente, volte aqui (ou edite a planilha) e preencha as colunas "
+                "'Protocolo Coelba' e 'Prazo Coelba' na Fila de Reclamações."
+            )
 
         protocolo_anterior = st.text_input("Protocolo anterior (se for o caso):", key="rec5_protocolo_anterior")
         responsavel = st.selectbox("Responsável por abrir o chamado:", RESPONSAVEIS, key="rec5_responsavel")
@@ -920,6 +937,7 @@ elif "Abrir Reclamação" in modulo_selecionado:
                                 relato=relato,
                                 telefone=telefone,
                                 email_resposta=email_resposta,
+                                endereco_referencia=endereco_referencia,
                                 ponto_referencia=ponto_referencia,
                                 protocolo_anterior=protocolo_anterior,
                                 responsavel=responsavel,
