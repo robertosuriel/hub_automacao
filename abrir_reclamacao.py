@@ -171,6 +171,52 @@ def clicar_texto_exato(driver, texto, timeout=15):
     time.sleep(0.2)
 
 
+def _continuar_habilitado(driver, espera=3):
+    fim = time.time() + espera
+    while time.time() < fim:
+        try:
+            for b in driver.find_elements(By.XPATH, "//button[contains(normalize-space(.),'Continuar')]"):
+                if b.is_displayed() and b.is_enabled() and b.get_attribute("disabled") is None                         and "disabled" not in (b.get_attribute("class") or ""):
+                    return True
+        except Exception:
+            pass
+        time.sleep(0.3)
+    return False
+
+
+def selecionar_opcao_simples(driver, texto, timeout=15):
+    """Marca uma opção de rádio 'simples' (Falta de Energia) e confirma que o
+    botão Continuar ficou habilitado — clicar só no texto nem sempre marca o
+    rádio. Tenta: (1) input[type=radio] mais próximo, (2) clique nativo no
+    texto, (3) clique JS no texto. Se nenhuma funcionar, erra com o HTML real."""
+    el = WebDriverWait(driver, timeout).until(
+        EC.presence_of_element_located((By.XPATH, f"//*[normalize-space(text())='{texto}']"))
+    )
+    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+    time.sleep(0.3)
+    estrategias = [
+        lambda: driver.execute_script(
+            "let n=arguments[0]; for(let i=0;i<6&&n;i++){let r=n.querySelector&&n.querySelector(\"input[type='radio']\");"
+            "if(r){r.click();return true;} n=n.parentElement;} return false;", el),
+        lambda: el.click(),
+        lambda: driver.execute_script("arguments[0].click();", el),
+    ]
+    for estrategia in estrategias:
+        try:
+            estrategia()
+        except Exception:
+            continue
+        if _continuar_habilitado(driver):
+            return
+    html = driver.execute_script(
+        "let n=arguments[0]; for(let i=0;i<3&&n.parentElement;i++) n=n.parentElement; return n.outerHTML;", el
+    )
+    raise ErroAbrirReclamacao(
+        "opcao_nao_marcou",
+        f"Cliquei em '{texto}' mas o Continuar não habilitou. HTML: {' '.join(html.split())[:700]}",
+    )
+
+
 def clicar_botao(driver, texto_contendo, timeout=15):
     el = WebDriverWait(driver, timeout).until(
         EC.element_to_be_clickable((By.XPATH, f"//button[contains(normalize-space(.),'{texto_contendo}')]"))
@@ -304,10 +350,7 @@ def navegar_ate_uc(driver, uc_codigo, timeout=30, exigir_ligada=False):
             driver.refresh()
             time.sleep(4)
 
-    try:
-        status = item.find_element(By.CSS_SELECTOR, "span.btn-status-imovel").text.strip().upper()
-    except Exception:
-        status = ""
+    status = (item.get_attribute("textContent") or "").upper()
     if exigir_ligada and "DESLIGADA" in status:
         raise ErroAbrirReclamacao(
             "uc_desligada",
@@ -442,12 +485,12 @@ def abrir_falta_energia(driver, telefone, ponto_referencia):
         time.sleep(2)
 
     # "Onde é a falta de energia?" -> resposta padrão
-    clicar_texto_exato(driver, "Não sei se é apenas na minha unidade consumidora.")
+    selecionar_opcao_simples(driver, "Não sei se é apenas na minha unidade consumidora.")
     clicar_botao(driver, "Continuar")
     time.sleep(1.5)
 
     # "Pode dizer o que você sabe sobre o problema?" -> resposta padrão
-    clicar_texto_exato(driver, "Não sei.")
+    selecionar_opcao_simples(driver, "Não sei.")
     clicar_botao(driver, "Continuar")
     time.sleep(1.5)
 
