@@ -1072,7 +1072,7 @@ def processar_fila_reclamacoes(credenciais_por_cliente):
     que só importa protocolos.py."""
     from abrir_reclamacao import (
         logar_e_entrar_na_uc, navegar_ate_uc, abrir_reclamacao_ouvidoria,
-        abrir_falta_energia, ErroAbrirReclamacao,
+        abrir_falta_energia, ErroAbrirReclamacao, descrever_falha,
     )
 
     client = autenticar_google_sheets()
@@ -1148,14 +1148,16 @@ def processar_fila_reclamacoes(credenciais_por_cliente):
             except Exception as e:
                 aba.update_cell(num_linha, idx["Status"] + 1, "Erro: inesperado")
                 # Grava o detalhe na planilha (antes só ia pra memória e se perdia).
+                detalhe_erro = f"{type(e).__name__}: {str(e)[:300]}"
                 try:
-                    detalhe_erro = f"{type(e).__name__}: {str(e)[:300]}".replace("\n", " ")
+                    detalhe_erro = (descrever_falha(driver, e) if driver
+                                    else f"{type(e).__name__}: {str(e)[:300]}").replace("\n", " ")
                     aba.update_cell(num_linha, idx["Observação"] + 1,
                                     (linha[idx["Observação"]] + f" | {detalhe_erro}").strip(" |"))
                 except Exception:
                     pass
                 resultados.append({"linha": num_linha, "cliente": cliente, "ok": False,
-                                    "erro": "inesperado", "detalhe": f"{type(e).__name__}: {str(e)[:200]}"})
+                                    "erro": "inesperado", "detalhe": detalhe_erro})
                 if driver:
                     try:
                         driver.save_screenshot(f"erro_reclamacao_{cliente}_{num_linha}.png")

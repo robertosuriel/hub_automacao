@@ -208,6 +208,27 @@ class ErroAbrirReclamacao(Exception):
         self.motivo = motivo
         self.detalhe = detalhe
 
+def descrever_falha(driver, e):
+    """Texto de diagnóstico pra gravar na planilha: tipo do erro, linha de
+    abrir_reclamacao.py onde parou, URL atual e um trecho do texto da tela
+    (o print salvo no servidor do Streamlit Cloud não dá pra abrir)."""
+    import traceback
+    partes = [type(e).__name__]
+    try:
+        quadros = [f for f in traceback.extract_tb(e.__traceback__) if f.filename.endswith("abrir_reclamacao.py")]
+        if quadros:
+            partes.append(f"em abrir_reclamacao.py:{quadros[-1].lineno} ({(quadros[-1].line or '').strip()[:90]})")
+    except Exception:
+        pass
+    try:
+        partes.append(f"URL: {driver.current_url}")
+        texto = driver.find_element(By.TAG_NAME, "body").text
+        partes.append("TELA: " + " ".join(texto.split())[:350])
+    except Exception:
+        pass
+    return " | ".join(partes)
+
+
 
 # --- Navegação até a UC -----------------------------------------------------
 
@@ -410,15 +431,25 @@ def logar_e_entrar_na_uc(login_user, login_password, cliente, uc_codigo):
     UC. Devolve o driver pronto pra chamar abrir_reclamacao_ouvidoria ou
     abrir_falta_energia; quem chamar é responsável por driver.quit()."""
     driver = configurar_driver()
-    instalar_interceptor(driver)
-    driver.get("https://agenciavirtual.neoenergia.com/#/login")
-    time.sleep(4)
-    WebDriverWait(driver, 30).until(lambda d: d.execute_script("return document.readyState") == "complete")
+    try:
+        instalar_interceptor(driver)
+        driver.get("https://agenciavirtual.neoenergia.com/#/login")
+        time.sleep(4)
+        WebDriverWait(driver, 30).until(lambda d: d.execute_script("return document.readyState") == "complete")
 
-    token = realizar_login_selenium_original(driver, login_user, login_password, f"reclamacao_{cliente}")
-    if not token:
+        token = realizar_login_selenium_original(driver, login_user, login_password, f"reclamacao_{cliente}")
+        if not token:
+            raise ErroAbrirReclamacao("login_falhou", f"Não consegui logar em {cliente}.")
+
+        navegar_ate_uc(driver, uc_codigo)
+        return driver
+    except ErroAbrirReclamacao:
         driver.quit()
-        raise ErroAbrirReclamacao("login_falhou", f"Não consegui logar em {cliente}.")
-
-    navegar_ate_uc(driver, uc_codigo)
-    return driver
+        raise
+    except Exception as e:
+        detalhe = descrever_falha(driver, e)
+        try:
+            driver.quit()
+        except Exception:
+            pass
+        raise ErroAbrirReclamacao("falha_login_ou_navegacao", detalhe)
