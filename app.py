@@ -128,7 +128,7 @@ class StreamlitRedirect:
     def flush(self):
         pass
 
-clientes_disponiveis = ['blue', 'criatech', 'soft', 'softcomp', 'DNA', 'NCA', 'GM', 'RM', 'PRIMO']
+clientes_disponiveis = ['blue', 'criatech', 'soft', 'softcomp', 'DNA', 'NCA', 'GM', 'RM', 'PRIMO', 'DanielMatos']
 
 # --- BARRA LATERAL (MENU) ---
 try:
@@ -210,7 +210,8 @@ if "Extrair Faturas" in modulo_selecionado:
                             "NCA": "Controle_NCA_Automação",
                             "GM": "Controle_GM_Automação",
                             "RM": "Controle_RM_Automação",
-                            "PRIMO": "Controle_PRIMO_Automação"
+                            "PRIMO": "Controle_PRIMO_Automação",
+                            "DanielMatos": "Controle_DanielMatos_Automação"
                         }
                         worksheet = MAPA_ABAS.get(cliente)
                         
@@ -307,7 +308,8 @@ elif "Gerar PDFs 'PAGO'" in modulo_selecionado:
                         "NCA": "Controle_NCA_Automação",
                         "GM": "Controle_GM_Automação",
                         "RM": "Controle_RM_Automação",
-                        "PRIMO": "Controle_PRIMO_Automação"
+                        "PRIMO": "Controle_PRIMO_Automação",
+                        "DanielMatos": "Controle_DanielMatos_Automação"
                     }
                     
                     clientes_com_aba = {}

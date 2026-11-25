@@ -12,7 +12,7 @@ SPREADSHEET_ID = "1Ut5Y0LstIP7nhv7Jzyywc7SS7ObIPlO-3yEg-J8Pp5o"
 ABAS_CONTROLE = [
     "Controle_BlueSolutions_Automação", "Controle_Criatech_Automação", "Controle_NCA_Automação",
     "Controle_GM_Automação", "Controle_RM_Automação", "Controle_DNA_Automação", "Controle_SoftDados_Automação",
-    "Controle_SoftComp_Automação", "Controle_PRIMO_Automação",
+    "Controle_SoftComp_Automação", "Controle_PRIMO_Automação", "Controle_DanielMatos_Automação",
 ]
 
 
